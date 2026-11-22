@@ -54,13 +54,27 @@
   #status { min-height: 1.5em; color: var(--lamp); font-size: 16px; }
   .hidden { display: none !important; }
 
-  /* Small readout in the corner, so you can see what the tracker is doing */
-  #readout {
+  /* Panel in the corner: what the tracker sees, and the pinch controls */
+  #panel {
     position: fixed; left: 16px; bottom: 16px;
+    width: min(320px, calc(100vw - 32px));
     font-size: 14px; color: var(--dust);
-    background: color-mix(in srgb, var(--room) 70%, transparent);
-    padding: 8px 12px; border-radius: 8px;
+    background: color-mix(in srgb, var(--wall) 88%, transparent);
+    padding: 12px 14px; border-radius: 10px;
+    display: grid; gap: 10px;
   }
+  #panel .row { display: grid; grid-template-columns: 56px 1fr 44px; align-items: center; gap: 8px; }
+  #panel .name { color: var(--bone); font-weight: 600; }
+  #panel .num  { text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* A meter: the bar shows how wide open the pinch is */
+  .meter { position: relative; height: 10px; border-radius: 5px; background: var(--room); overflow: hidden; }
+  .meter .fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 5px; }
+  .meter .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--bone); opacity: 0.7; }
+
+  #panel label { display: grid; grid-template-columns: 1fr 44px; gap: 4px 8px; align-items: center; }
+  #panel label span:first-child { grid-column: 1 / -1; }
+  #panel input[type=range] { width: 100%; accent-color: var(--lamp); }
 </style>
 </head>
 <body>
@@ -70,45 +84,46 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 1: turn on your camera and hold up your hands. You should see a dot on every fingertip.</p>
+  <p>Stage 2: touch your thumb to your index finger. A ring lights up when the pinch counts. Pinch with both hands to see a line between them.</p>
   <button id="go">Turn on camera</button>
   <div id="status"></div>
 </section>
 
-<div id="readout" class="hidden"></div>
+<div id="panel" class="hidden">
+  <div id="fps">Hands: 0</div>
+  <div class="row"><span class="name">Hand 1</span><div class="meter" id="m0"><div class="fill"></div><div class="mark close"></div><div class="mark open"></div></div><span class="num" id="n0">-</span></div>
+  <div class="row"><span class="name">Hand 2</span><div class="meter" id="m1"><div class="fill"></div><div class="mark close"></div><div class="mark open"></div></div><span class="num" id="n1">-</span></div>
+  <label><span>Pinch closes below</span><input type="range" id="closeAt" min="0.10" max="0.60" step="0.01"><span class="num" id="closeVal"></span></label>
+  <label><span>Pinch opens above</span><input type="range" id="openAt" min="0.15" max="0.80" step="0.01"><span class="num" id="openVal"></span></label>
+</div>
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 1: camera on, dots on your fingertips
+//  AIR STRINGS · Stage 2: detect a pinch
 // ════════════════════════════════════════════════════════════
 //
-//  What happens, in order:
-//    1. You press the button. The browser asks for the camera.
-//    2. We load MediaPipe's hand tracker (a small AI model).
-//    3. About 60 times a second, we:
-//         a. show the tracker the newest camera picture
-//         b. get back 21 points for each hand it can see
-//         c. draw the picture and the points on the canvas
-//
-//  Nothing leaves your computer. The model runs inside the browser tab.
+//  New in this stage:
+//    • Each hand keeps its own slot, so its color no longer swaps (section 7)
+//    • The points are smoothed, so the dots shake less (section 8)
+//    • Pinch detection, measured against the size of your hand (section 9)
+//    • Two pinches at once draw a line between them, a first look at a string (section 11)
 
 // ── 1. Where the hand tracker comes from ─────────────────────
-// MediaPipe is Google's free library for tracking hands, faces and bodies.
-// We load a fixed version (0.10.14), so an update can't break the app.
 const MEDIAPIPE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 // ── 2. The 21 points on a hand ───────────────────────────────
-// MediaPipe numbers the points the same way every time:
 //    0 = wrist
 //    1-4   = thumb    (4 is the thumb tip)
-//    5-8   = index    (8 is the index tip)
-//    9-12  = middle   (12 is the tip)
+//    5-8   = index    (5 is the knuckle, 8 is the tip)
+//    9-12  = middle   (9 is the knuckle, 12 is the tip)
 //    13-16 = ring     (16 is the tip)
 //    17-20 = pinky    (20 is the tip)
+const WRIST = 0, THUMB_TIP = 4, INDEX_KNUCKLE = 5, INDEX_TIP = 8, MIDDLE_KNUCKLE = 9, PINKY_KNUCKLE = 17;
+// On a flat, facing hand the palm is about 1.4 times as long as it is wide
+const PALM_WIDTH_SCALE = 1.4;
 const FINGERTIPS = [4, 8, 12, 16, 20];
 
-// Which points to join with a line, so the dots look like a hand.
 const BONES = [
   [0, 1], [1, 2], [2, 3], [3, 4],          // thumb
   [0, 5], [5, 6], [6, 7], [7, 8],          // index
@@ -118,40 +133,49 @@ const BONES = [
   [0, 17],                                 // across the palm
 ];
 
-// ── 3. Grab the page elements we need ────────────────────────
-const video   = document.getElementById('cam');
-const canvas  = document.getElementById('stage');
-const ctx     = canvas.getContext('2d');
-const startEl = document.getElementById('start');
-const goBtn   = document.getElementById('go');
-const statusEl  = document.getElementById('status');
-const readoutEl = document.getElementById('readout');
+// ── 3. Settings you can tune ─────────────────────────────────
+const settings = {
+  // A real pinch reads about 0.10-0.17. A relaxed hand, thumb resting
+  // beside the index finger, reads about 0.34. These sit in between.
+  closeAt: 0.22,     // the pinch closes when the ratio is smaller than this
+  openAt:  0.32,     // it opens again when the ratio is bigger than this
+  holdFrames: 2,     // a change must last this many frames in a row to count
+  smoothing: 0.5,    // 0 = frozen, 1 = no smoothing at all
+};
 
-// Read the colors from the CSS above, so they're defined in one place.
+// ── 4. Grab the page elements we need ────────────────────────
+const $ = id => document.getElementById(id);
+const video = $('cam'), canvas = $('stage'), ctx = canvas.getContext('2d');
+
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const COLORS = { room: css('--room'), dust: css('--dust'), hands: [css('--lamp'), css('--ember')] };
+const COLORS = { room: css('--room'), bone: css('--bone'), dust: css('--dust'), hands: [css('--lamp'), css('--ember')] };
 
-let tracker = null;      // the hand tracker, once it has loaded
-let hands = [];          // the hands found in the latest frame
-let lastVideoTime = -1;  // so we never send the same camera frame twice
+let tracker = null;
+let lastVideoTime = -1;
 
-// ── 4. Keep the canvas the same size as the window ───────────
-// "dpr" is the screen's pixel density. Retina Macs have 2 pixels per point,
-// so we draw at double size to keep lines sharp.
+// Two slots, one per hand. A slot is empty (null) when that hand isn't in view.
+const slots = [null, null];
+
+// Small helpers
+const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+const mid  = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// ── 5. Keep the canvas the same size as the window ───────────
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = innerWidth * dpr;
   canvas.height = innerHeight * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // from now on, draw in normal points
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 addEventListener('resize', resize);
 resize();
 
-// ── 5. Start: camera first, then the tracker ─────────────────
-goBtn.addEventListener('click', async () => {
-  goBtn.disabled = true;
+// ── 6. Start: camera first, then the tracker ─────────────────
+$('go').addEventListener('click', async () => {
+  $('go').disabled = true;
   try {
-    statusEl.textContent = 'Waiting for camera permission…';
+    $('status').textContent = 'Waiting for camera permission…';
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
       audio: false,
@@ -159,30 +183,28 @@ goBtn.addEventListener('click', async () => {
     video.srcObject = stream;
     await video.play();
 
-    statusEl.textContent = 'Loading the hand tracker…';
+    $('status').textContent = 'Loading the hand tracker…';
     tracker = await loadTracker();
 
-    startEl.classList.add('hidden');
-    readoutEl.classList.remove('hidden');
+    $('start').classList.add('hidden');
+    $('panel').classList.remove('hidden');
   } catch (err) {
     console.error(err);
-    statusEl.textContent = err.name === 'NotAllowedError'
+    $('status').textContent = err.name === 'NotAllowedError'
       ? 'The camera was blocked. Allow it in the address bar, then try again.'
       : 'Something went wrong: ' + err.message;
-    goBtn.disabled = false;
+    $('go').disabled = false;
   }
 });
 
 async function loadTracker() {
-  // "import()" downloads the MediaPipe code only when we need it.
   const vision = await import(MEDIAPIPE + '/vision_bundle.mjs');
   const files = await vision.FilesetResolver.forVisionTasks(MEDIAPIPE + '/wasm');
   const options = delegate => ({
     baseOptions: { modelAssetPath: HAND_MODEL, delegate },
-    runningMode: 'VIDEO',   // we'll feed it a stream of frames, not single photos
+    runningMode: 'VIDEO',
     numHands: 2,
   });
-  // The graphics card (GPU) is fastest. If the browser won't allow it, use the CPU.
   try {
     return await vision.HandLandmarker.createFromOptions(files, options('GPU'));
   } catch (e) {
@@ -191,19 +213,13 @@ async function loadTracker() {
   }
 }
 
-// ── 6. Fit the camera picture to the window ──────────────────
-// Like a photo set to "fill": scale it until it covers the whole window,
-// then centre it. Some of the edges get cropped.
 function videoFit() {
   const vw = video.videoWidth, vh = video.videoHeight;
   const scale = Math.max(innerWidth / vw, innerHeight / vh);
   return { vw, vh, scale, ox: (innerWidth - vw * scale) / 2, oy: (innerHeight - vh * scale) / 2 };
 }
 
-// MediaPipe gives each point as a fraction of the camera picture:
-// x = 0 is the left edge, x = 1 is the right edge. We turn that into a
-// position on the screen. We also flip x, so the screen acts like a mirror:
-// move your right hand right, and it moves right on screen.
+// Fraction of the camera picture → mirrored position on screen
 function toScreen(p, fit) {
   return {
     x: innerWidth - (p.x * fit.vw * fit.scale + fit.ox),
@@ -211,69 +227,200 @@ function toScreen(p, fit) {
   };
 }
 
-// ── 7. The loop: runs once per screen refresh ────────────────
+// ── 7. Keep each hand in its own slot ────────────────────────
+// MediaPipe lists the hands it finds, but the order can change from one
+// frame to the next. That's what made the colors swap in Stage 1.
+//
+// The fix: remember where each hand's wrist was last frame. Each new hand
+// goes to the slot whose wrist was closest. A hand with no close match
+// takes an empty slot. A slot that goes unmatched for a moment is cleared.
+const MAX_JUMP = 300;     // pixels: further than this, it's not the same hand
+const LOST_AFTER = 0.25;  // seconds: how long a hand can vanish before its slot clears
+
+function assignHands(found, now) {
+  const used = new Set();
+  const matched = [null, null];
+
+  // Every possible pairing of (new hand, slot), closest first
+  const pairs = [];
+  found.forEach((pts, i) => slots.forEach((slot, j) => {
+    if (slot) pairs.push({ i, j, d: dist(pts[WRIST], slot.pts[WRIST]) });
+  }));
+  pairs.sort((a, b) => a.d - b.d);
+
+  for (const { i, j, d } of pairs) {
+    if (used.has(i) || matched[j] || d > MAX_JUMP) continue;
+    matched[j] = found[i];
+    used.add(i);
+  }
+
+  // Hands with no match go into an empty slot, if there is one
+  found.forEach((pts, i) => {
+    if (used.has(i)) return;
+    const empty = [0, 1].find(j => !slots[j] && !matched[j]);
+    if (empty === undefined) return;
+    slots[empty] = newHand(pts);
+    matched[empty] = pts;
+    used.add(i);
+  });
+
+  // Update matched slots. Clear the ones that have been missing too long.
+  for (let j = 0; j < 2; j++) {
+    if (matched[j]) updateHand(slots[j], matched[j], now);
+    else if (slots[j] && now - slots[j].seen > LOST_AFTER) slots[j] = null;
+  }
+}
+
+function newHand(pts) {
+  return {
+    pts: pts.map(p => ({ ...p })),   // smoothed points
+    seen: 0,                         // when we last saw it
+    ratio: 1,                        // pinch gap ÷ hand size
+    pinched: false,                  // is the pinch closed right now?
+    streak: 0,                       // frames in a row that disagree with "pinched"
+    at: { x: 0, y: 0 },              // the pinch point: halfway between thumb and index tips
+    flash: 0,                        // when the pinch last changed, for the burst animation
+  };
+}
+
+// ── 8. Smoothing ─────────────────────────────────────────────
+// The tracker's points wobble by a few pixels every frame, even when your
+// hand is still. Moving each point only part of the way to its new spot
+// calms the wobble. The cost is a little lag.
+function updateHand(h, pts, now) {
+  const k = settings.smoothing;
+  for (let i = 0; i < 21; i++) {
+    h.pts[i].x += k * (pts[i].x - h.pts[i].x);
+    h.pts[i].y += k * (pts[i].y - h.pts[i].y);
+  }
+  h.seen = now;
+  updatePinch(h);
+}
+
+// ── 9. Pinch detection ───────────────────────────────────────
+// The gap between thumb tip and index tip, in pixels, changes as you move
+// closer to the camera or further away. So we divide it by the size of the
+// hand. That ratio stays about the same at any distance, so the same
+// settings work whether you lean in or sit back.
+//
+// Hand size is the bigger of two measures of the palm: its length (wrist
+// to middle knuckle) and its width (index knuckle to pinky knuckle, scaled
+// up to match). Tilt your palm forward and the length looks shorter to the
+// camera. Turn it sideways and the width does. They rarely both shrink at once.
+//
+// Two thresholds, not one: the pinch closes below closeAt and only opens
+// again above openAt. In between, nothing changes. With a single threshold,
+// a gap that hovers right on the line would flicker on and off.
+//
+// And a change has to last holdFrames frames in a row, to ignore a
+// one-frame glitch from the tracker.
+function updatePinch(h) {
+  const p = h.pts;
+  const palmLength = dist(p[WRIST], p[MIDDLE_KNUCKLE]);
+  const palmWidth = dist(p[INDEX_KNUCKLE], p[PINKY_KNUCKLE]) * PALM_WIDTH_SCALE;
+  const handSize = Math.max(palmLength, palmWidth, 1);
+  h.ratio = dist(p[THUMB_TIP], p[INDEX_TIP]) / handSize;
+  h.at = mid(p[THUMB_TIP], p[INDEX_TIP]);
+
+  const wantsChange = h.pinched ? h.ratio > settings.openAt : h.ratio < settings.closeAt;
+  h.streak = wantsChange ? h.streak + 1 : 0;
+  if (h.streak >= settings.holdFrames) {
+    h.pinched = !h.pinched;
+    h.streak = 0;
+    h.flash = performance.now();
+  }
+}
+
+// ── 10. The loop ─────────────────────────────────────────────
 let fps = 0, frames = 0, fpsClock = performance.now();
 
 function loop() {
-  requestAnimationFrame(loop);   // ask to run again before the next refresh
+  requestAnimationFrame(loop);
+  const now = performance.now() / 1000;
 
-  // a. Track: only when there is a new camera frame
   if (tracker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const result = tracker.detectForVideo(video, performance.now());
     const fit = videoFit();
-    hands = result.landmarks.map(points => points.map(p => toScreen(p, fit)));
+    assignHands(result.landmarks.map(points => points.map(p => toScreen(p, fit))), now);
     frames++;
   }
 
-  // b. Draw
   draw();
+  updatePanel();
 
-  // c. Count frames per second, once a second
-  const now = performance.now();
-  if (now - fpsClock > 1000) {
-    fps = Math.round(frames * 1000 / (now - fpsClock));
-    frames = 0; fpsClock = now;
-    readoutEl.textContent = `Hands: ${hands.length} · Tracking ${fps} times a second`;
+  const t = performance.now();
+  if (t - fpsClock > 1000) {
+    fps = Math.round(frames * 1000 / (t - fpsClock));
+    frames = 0; fpsClock = t;
   }
 }
 
+// ── 11. Drawing ──────────────────────────────────────────────
 function draw() {
   ctx.fillStyle = COLORS.room;
   ctx.fillRect(0, 0, innerWidth, innerHeight);
-  if (!video.videoWidth) return;
 
-  // The camera picture, mirrored and dimmed so the hands stand out.
-  const fit = videoFit();
-  ctx.save();
-  ctx.globalAlpha = 0.35;
-  ctx.translate(innerWidth, 0);
-  ctx.scale(-1, 1);              // flip left-right
-  ctx.drawImage(video, fit.ox, fit.oy, fit.vw * fit.scale, fit.vh * fit.scale);
-  ctx.restore();
+  if (video.videoWidth) {
+    const fit = videoFit();
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.translate(innerWidth, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, fit.ox, fit.oy, fit.vw * fit.scale, fit.vh * fit.scale);
+    ctx.restore();
+  }
 
-  hands.forEach((pts, i) => {
-    const color = COLORS.hands[i % 2];
+  // Both hands pinching: draw a line between the two pinch points.
+  // In Stage 5 this line becomes a string you can keep.
+  const [a, b] = slots;
+  if (a && b && a.pinched && b.pinched) {
+    ctx.strokeStyle = COLORS.bone;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([10, 10]);
+    ctx.lineDashOffset = -performance.now() / 30;   // the dashes crawl along the line
+    ctx.beginPath();
+    ctx.moveTo(a.at.x, a.at.y);
+    ctx.lineTo(b.at.x, b.at.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
-    // Bones: thin lines between the joints
+  slots.forEach((h, i) => {
+    if (!h) return;
+    const color = COLORS.hands[i];
+    const p = h.pts;
+
     ctx.strokeStyle = COLORS.dust;
-    ctx.globalAlpha = 0.6;
+    ctx.globalAlpha = 0.5;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    for (const [a, b] of BONES) {
-      ctx.moveTo(pts[a].x, pts[a].y);
-      ctx.lineTo(pts[b].x, pts[b].y);
-    }
+    for (const [m, n] of BONES) { ctx.moveTo(p[m].x, p[m].y); ctx.lineTo(p[n].x, p[n].y); }
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // Joints: small dots
     ctx.fillStyle = COLORS.dust;
-    for (const p of pts) dot(p, 3);
-
-    // Fingertips: big dots in the hand's own color
+    for (const q of p) dot(q, 3);
     ctx.fillStyle = color;
-    for (const k of FINGERTIPS) dot(pts[k], 9);
+    for (const k of FINGERTIPS) dot(p[k], 8);
+
+    // The pinch point: a thin outline when open, a thick ring when closed
+    ctx.strokeStyle = color;
+    ctx.lineWidth = h.pinched ? 6 : 2;
+    ctx.beginPath();
+    ctx.arc(h.at.x, h.at.y, h.pinched ? 16 : 22, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // A short burst the moment a pinch closes or opens
+    const age = (performance.now() - h.flash) / 300;
+    if (age < 1) {
+      ctx.globalAlpha = 1 - age;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(h.at.x, h.at.y, 16 + age * 40, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
   });
 }
 
@@ -282,6 +429,46 @@ function dot(p, r) {
   ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
   ctx.fill();
 }
+
+// ── 12. The panel: live pinch numbers and the two sliders ────
+const METER_MAX = 1.2;   // the meter's right edge stands for a ratio of 1.2
+const pct = v => clamp(v / METER_MAX, 0, 1) * 100 + '%';
+
+function updatePanel() {
+  $('fps').textContent = `Hands: ${slots.filter(Boolean).length} · Tracking ${fps} times a second`;
+  slots.forEach((h, i) => {
+    const m = $('m' + i);
+    const fill = m.querySelector('.fill');
+    fill.style.width = h ? pct(h.ratio) : '0';
+    fill.style.background = h && h.pinched ? COLORS.hands[i] : COLORS.dust;
+    m.querySelector('.close').style.left = pct(settings.closeAt);
+    m.querySelector('.open').style.left = pct(settings.openAt);
+    $('n' + i).textContent = h ? h.ratio.toFixed(2) : '-';
+  });
+}
+
+// The sliders change the thresholds while you play, so you can tune them to your hands.
+function showSettings() {
+  for (const k of ['closeAt', 'openAt']) {
+    $(k).value = settings[k];
+    $(k.replace('At', 'Val')).textContent = settings[k].toFixed(2);
+  }
+}
+for (const key of ['closeAt', 'openAt']) {
+  $(key).addEventListener('input', () => {
+    settings[key] = +$(key).value;
+    // "Opens above" must stay higher than "closes below", or a pinch could never let go
+    if (settings.openAt < settings.closeAt + 0.05) {
+      if (key === 'closeAt') settings.openAt = settings.closeAt + 0.05;
+      else settings.closeAt = settings.openAt - 0.05;
+    }
+    showSettings();
+  });
+}
+showSettings();
+
+// For automated testing only: lets a test feed in made-up hands without a camera.
+window.airStrings = { assignHands, slots, settings };
 
 loop();
 </script>
