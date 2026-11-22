@@ -103,7 +103,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 7: pinch the dot in the middle of a string and let go to open its menu. Pick a scale, key, notes or chords, and octave for that string alone. Choose by pinching an option, or by holding your pinch point over it. Your hands can press the buttons at the top too.</p>
+  <p>Stage 8: 24 instruments, drums included. Hold your fingertip on a string's middle dot to open its menu, then pick an instrument. On a drum string, every zone is a different drum.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -129,10 +129,15 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 7: the string menu, by hand
+//  AIR STRINGS · Stage 8: 24 instruments
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • 24 instruments, all built from scratch with no recordings (sections 12b-12c)
+//    • Two drum kits, one drum per zone along a string (section 12d)
+//    • An Instrument section in the string menu, and each string shows its instrument
+//
+//  From Stage 7:
 //    • Every string has its own scale, key, notes/chords and octave (section 18)
 //    • A dot in the middle of each string opens its menu (sections 10, 20)
 //    • Choose from the menu by pinching, or by hovering until a ring fills (section 20)
@@ -600,7 +605,7 @@ function addString(a, b) {
   const s = {
     a: { ...a }, b: { ...b }, born: seconds(), wobble: 0, wobbleAt: 0, wobbleU: 0.5, plucks: 0, mem: {},
     // Each string's own music settings. A new string starts with the top bar's.
-    key: music.key, scale: music.scale, mode: music.mode, oct: 0,
+    key: music.key, scale: music.scale, mode: music.mode, oct: 0, inst: 'guitar',
   };
   strings.push(s);
   bursts.push({ ...mid(a, b), t: performance.now(), color: COLORS.bone });
@@ -704,20 +709,51 @@ function makeRoom(ctx, seconds) {
 // 4. Also shrink everything a little each time round, so the note fades.
 //
 // Each note is worked out once, saved, and replayed from then on.
-const STRING_SOUND = {
-  seconds: 3.0,       // how long each note lasts
-  ring: 3.2,          // seconds for a note to fade to silence (1/1000 of its start)
-  bright: 0.55,       // 0-1: how bright the starting noise is
-  pickAt: 0.18,       // 0-0.5: where along the string it's plucked. Near the end = twangier
+// Each plucked instrument is the same loop with different settings:
+//   seconds  how long each note lasts
+//   ring     seconds for a note to fade to silence (1/1000 of its start)
+//   bright   0-1: how bright the starting noise is
+//   pickAt   0-0.5: where along the string it's plucked. Near the end = twangier
+//   courses  some instruments pair or triple every string, tuned a few cents
+//            apart (cents = hundredths of a semitone). That gives the shimmer
+//            of an oud or a qanun.
+//   bridge   the sitar's flat bridge: the string slaps against it on one side
+//            of each swing. That flattens the bottom of the wave and adds its buzz.
+const STRING_SOUND = { seconds: 3.0, ring: 3.2, bright: 0.55, pickAt: 0.18 };   // the guitar
+const PLUCKED = {
+  guitar: STRING_SOUND,
+  egtr:   { seconds: 3.5, ring: 5.0, bright: 0.7,  pickAt: 0.12 },
+  harp:   { seconds: 3.5, ring: 4.5, bright: 0.32, pickAt: 0.45 },
+  oud:    { seconds: 2.0, ring: 1.8, bright: 0.8,  pickAt: 0.1,  courses: [-5, 5] },
+  qanun:  { seconds: 2.5, ring: 2.6, bright: 0.9,  pickAt: 0.07, courses: [-6, 0, 6] },
+  sitar:  { seconds: 3.5, ring: 4.0, bright: 0.95, pickAt: 0.05, bridge: 0.25 },
+  bass:   { seconds: 2.5, ring: 2.8, bright: 0.25, pickAt: 0.3 },
 };
 const noteCache = new Map();
 
-function stringNote(midi) {
-  if (noteCache.has(midi)) return noteCache.get(midi);
-  const sr = audio.sampleRate, P = STRING_SOUND;
-  const pitch = midiToPitch(midi);
+function stringNote(id, midi) {
+  const key = id + ':' + midi;
+  if (noteCache.has(key)) return noteCache.get(key);
+  const sr = audio.sampleRate, P = PLUCKED[id];
   const out = new Float32Array(Math.floor(sr * P.seconds));
+  const courses = P.courses || [0];
+  for (const cents of courses) addPluck(out, midiToPitch(midi) * Math.pow(2, cents / 1200), P, sr);
 
+  // Even out the volume, and fade the last 50 ms so it doesn't click
+  let peak = 1e-6;
+  for (const v of out) peak = Math.max(peak, Math.abs(v));
+  const fade = Math.floor(sr * 0.05);
+  for (let n = 0; n < out.length; n++) out[n] *= (0.8 / peak) * Math.min(1, (out.length - n) / fade);
+
+  const buf = audio.createBuffer(1, out.length, sr);
+  buf.getChannelData(0).set(out);
+  if (noteCache.size > 200) noteCache.delete(noteCache.keys().next().value);   // keep memory in check
+  noteCache.set(key, buf);
+  return buf;
+}
+
+// One Karplus-Strong string, added into "out"
+function addPluck(out, pitch, P, sr) {
   // How many samples long is one trip round the loop? Usually not a whole
   // number. The averaging step adds half a sample of delay on its own.
   const period = sr / pitch - 0.5;
@@ -735,7 +771,9 @@ function stringNote(midi) {
   // Plucking away from the middle: subtract a shifted copy of the noise.
   // This cancels the tones a real string can't make when plucked there.
   const shift = Math.max(1, Math.round(P.pickAt * N)), copy = loop.slice();
-  for (let i = 0; i < N; i++) loop[i] = copy[i] - copy[(i - shift + N) % N];
+  let peak = 1e-6;
+  for (let i = 0; i < N; i++) { loop[i] = copy[i] - copy[(i - shift + N) % N]; peak = Math.max(peak, Math.abs(loop[i])); }
+  for (let i = 0; i < N; i++) loop[i] /= peak;
 
   // 4. How much to shrink per trip round the loop, so it fades over "ring" seconds
   const shrink = Math.pow(0.001, 1 / (pitch * P.ring));
@@ -744,49 +782,379 @@ function stringNote(midi) {
   let i = 0, prev = 0, apIn = 0, apOut = 0;
   for (let n = 0; n < out.length; n++) {
     const x = loop[i];
-    out[n] = x;
-    const avg = 0.5 * (x + prev);                 // average with the neighbour
+    out[n] += x;
+    let avg = 0.5 * (x + prev);                   // average with the neighbour
     prev = x;
+    // The sitar's bridge: below -bridge, the string is pressed flat against it
+    if (P.bridge && avg < -P.bridge) avg = -P.bridge + (avg + P.bridge) * 0.25;
     const y = ap * avg + apIn - ap * apOut;       // the fraction-of-a-sample delay
     apIn = avg; apOut = y;
     loop[i] = y * shrink;
     if (++i === N) i = 0;
   }
-
-  // Even out the volume, and fade the last 50 ms so it doesn't click
-  let peak = 1e-6;
-  for (const v of out) peak = Math.max(peak, Math.abs(v));
-  const fade = Math.floor(sr * 0.05);
-  for (let n = 0; n < out.length; n++) out[n] *= (0.8 / peak) * Math.min(1, (out.length - n) / fade);
-
-  const buf = audio.createBuffer(1, out.length, sr);
-  buf.getChannelData(0).set(out);
-  if (noteCache.size > 120) noteCache.delete(noteCache.keys().next().value);   // keep memory in check
-  noteCache.set(midi, buf);
-  return buf;
 }
 
-// Play one note on the string sound. loudness 0-1, when = audio clock time.
-function playString(midi, loudness, when) {
-  if (!audio) return;
-  const t = Math.max(when || 0, audio.currentTime);
+// ── 12c. The 24 instruments ──────────────────────────────────
+// Every instrument is built from a handful of simple parts:
+//   • a Karplus-Strong string (above), for anything plucked
+//   • oscillators: steady tones (sine, triangle, sawtooth, square)
+//   • partials: several sine waves at chosen multiples of the note's pitch,
+//     each fading at its own speed. A bell, a marimba and a piano differ
+//     mostly in which multiples ring, how loud, and for how long.
+//   • FM: one oscillator wobbling another's pitch very fast, which adds
+//     bright, metallic overtones (the electric piano's bell-like attack)
+//   • filtered noise, for breath, bows, hammers and drums
+//   • envelopes, for the shape of the volume over time
+//
+// family:  which row of the menu it sits in
+// shift:   octaves up or down from the string's notes, to suit the instrument
+// level:   volume trim, so every instrument sounds about as loud as the others
+// room:    how much reverb
+const INSTRUMENTS = {
+  guitar:    { name: 'Guitar',          family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.28 },
+  egtr:      { name: 'Electric guitar', family: 0, sound: 'pluck', shift: 0,  level: 0.45, room: 0.22, drive: true },
+  harp:      { name: 'Harp',            family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.45 },
+  oud:       { name: 'Oud',             family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.25 },
+  qanun:     { name: 'Qanun',           family: 0, sound: 'pluck', shift: 1,  level: 1.3,  room: 0.3 },
+  sitar:     { name: 'Sitar',           family: 0, sound: 'pluck', shift: 0,  level: 0.9,  room: 0.35 },
+  piano:     { name: 'Piano',           family: 1, sound: 'piano',    shift: 1,  level: 0.7,  room: 0.3 },
+  epiano:    { name: 'Electric piano',  family: 1, sound: 'epiano',   shift: 1,  level: 0.75,  room: 0.25 },
+  organ:     { name: 'Organ',           family: 1, sound: 'organ',    shift: 1,  level: 1.3,  room: 0.35 },
+  marimba:   { name: 'Marimba',         family: 1, sound: 'marimba',  shift: 1,  level: 0.85,  room: 0.3 },
+  kalimba:   { name: 'Kalimba',         family: 1, sound: 'kalimba',  shift: 1,  level: 0.8,  room: 0.35 },
+  steelpan:  { name: 'Steel pan',       family: 1, sound: 'steelpan', shift: 1,  level: 0.8,  room: 0.3 },
+  violin:    { name: 'Violin',          family: 2, sound: 'bowed',    shift: 1,  level: 0.7,  room: 0.4, bright: 3800 },
+  cello:     { name: 'Cello',           family: 2, sound: 'bowed',    shift: -1, level: 0.7,  room: 0.4, bright: 1800 },
+  strings:   { name: 'Strings',         family: 2, sound: 'ensemble', shift: 0,  level: 0.8,  room: 0.5 },
+  flute:     { name: 'Flute',           family: 2, sound: 'flute',    shift: 1,  level: 0.45,  room: 0.4 },
+  trumpet:   { name: 'Trumpet',         family: 2, sound: 'brass',    shift: 1,  level: 0.75,  room: 0.3 },
+  voices:    { name: 'Voices',          family: 2, sound: 'voices',   shift: 0,  level: 1.4,  room: 0.5 },
+  bells:     { name: 'Bells',           family: 3, sound: 'bells',    shift: 1,  level: 0.5,  room: 0.45 },
+  synth:     { name: 'Synth',           family: 3, sound: 'synth',    shift: 0,  level: 0.55,  room: 0.25 },
+  bass:      { name: 'Bass',            family: 3, sound: 'pluck',    shift: -1, level: 1.0,  room: 0.1 },
+  bass808:   { name: '808 bass',        family: 3, sound: 'sub',      shift: -1, level: 0.7,  room: 0.05 },
+  drums:     { name: 'Drums',           family: 3, sound: 'drums',    shift: 0,  level: 1.0,  room: 0.15 },
+  handdrums: { name: 'Hand drums',      family: 3, sound: 'handdrums',shift: 0,  level: 1.0,  room: 0.2 },
+};
+const INSTRUMENT_ORDER = Object.keys(INSTRUMENTS);
 
+// Sustained instruments (bowed, blown, sung, organ, synth) can sound for as
+// long as you like. For now each note lasts NOTE_HOLD seconds; Stage 9 lets
+// you hold a note by resting your finger on the string.
+const NOTE_HOLD = 0.9;
+
+// One shared output per instrument: volume trim, then to the speakers and the reverb
+const buses = {};
+function busFor(id) {
+  if (buses[id]) return buses[id];
+  const I = INSTRUMENTS[id];
+  const g = audio.createGain();
+  g.gain.value = I.level;
+  const send = audio.createGain();
+  send.gain.value = I.room / REVERB_AMOUNT * 0.28;   // 0.28 was the guitar's amount in Stage 6
+  g.connect(master);
+  g.connect(send);
+  send.connect(reverbIn);
+  if (I.drive) {
+    // The electric guitar runs through a "drive": loud sounds get rounded off,
+    // which adds the gritty overtones of an amplifier pushed hard.
+    const shaper = audio.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = i / 511.5 - 1; curve[i] = Math.tanh(3 * x); }
+    shaper.curve = curve;
+    shaper.oversample = '2x';
+    const pre = audio.createGain();
+    pre.gain.value = 1;
+    pre.connect(shaper);
+    shaper.connect(g);
+    return (buses[id] = pre);
+  }
+  return (buses[id] = g);
+}
+
+// ── Small building blocks ──
+// An envelope: a list of [seconds after t, value] points, ramped between
+function env(param, t, points, curve = 'exp') {
+  param.cancelScheduledValues(t);
+  param.setValueAtTime(points[0][1], t + points[0][0]);
+  for (const [dt, v] of points.slice(1)) {
+    if (curve === 'exp') param.exponentialRampToValueAtTime(Math.max(v, 0.0001), t + dt);
+    else param.linearRampToValueAtTime(v, t + dt);
+  }
+}
+function osc(type, freq, t, dur, out) {
+  const o = audio.createOscillator();
+  o.type = type;
+  o.frequency.value = freq;
+  o.connect(out);
+  o.start(t);
+  o.stop(t + dur + 0.1);
+  return o;
+}
+function gainNode(value, out) {
+  const g = audio.createGain();
+  g.gain.value = value;
+  if (out) g.connect(out);
+  return g;
+}
+function filterNode(type, freq, q, out) {
+  const f = audio.createBiquadFilter();
+  f.type = type;
+  f.frequency.value = freq;
+  f.Q.value = q;
+  if (out) f.connect(out);
+  return f;
+}
+let noiseBuffer = null;
+function noise(t, dur, out) {
+  if (!noiseBuffer) {
+    noiseBuffer = audio.createBuffer(1, audio.sampleRate * 2, audio.sampleRate);
+    const d = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  }
   const src = audio.createBufferSource();
-  src.buffer = stringNote(midi);
+  src.buffer = noiseBuffer;
+  src.loop = true;
+  src.connect(out);
+  src.start(t, Math.random() * 1.5);
+  src.stop(t + dur + 0.1);
+  return src;
+}
+// Several sine waves at multiples of the pitch, each with its own level and fade
+// list: [[multiple, level, seconds to fade away], ...]
+function partials(f, list, t, out, attack = 0.003) {
+  for (const [mult, level, fadeTime] of list) {
+    if (f * mult > 16000) continue;          // too high to hear: skip it
+    const g = gainNode(0, out);
+    env(g.gain, t, [[0, 0.0001], [attack, level], [attack + fadeTime, 0.0001]]);
+    osc('sine', f * mult, t, attack + fadeTime, g);
+  }
+}
+// Vibrato: a slow wobble in pitch, fading in after a moment, like a player's finger or voice
+function vibrato(oscs, t, dur, rate, cents, delay) {
+  const lfo = audio.createOscillator();
+  lfo.frequency.value = rate;
+  const depth = gainNode(0);
+  env(depth.gain, t, [[0, 0], [delay, 0], [delay + 0.3, cents]], 'lin');
+  lfo.connect(depth);
+  for (const o of oscs) depth.connect(o.detune);
+  lfo.start(t);
+  lfo.stop(t + dur + 0.1);
+}
+// A volume shape for sustained notes: rise, hold, fall
+function swell(out, t, attack, hold, release, level = 1) {
+  const g = gainNode(0, out);
+  env(g.gain, t, [[0, 0], [attack, level], [attack + hold, level * 0.85], [attack + hold + release, 0]], 'lin');
+  return g;
+}
 
-  // Soft plucks sound darker, hard plucks brighter
-  const tone = audio.createBiquadFilter();
-  tone.type = 'lowpass';
-  tone.frequency.value = 1200 + 7000 * loudness * loudness;
+// Play one note. loudness 0-1, t = audio clock time.
+function playNote(id, midi, loudness, t) {
+  if (!audio) return;
+  t = Math.max(t || 0, audio.currentTime);
+  const I = INSTRUMENTS[id];
+  midi += 12 * I.shift;
+  const f = midiToPitch(midi);
+  const out = gainNode(0.25 + 0.75 * loudness, busFor(id));
+  const L = NOTE_HOLD;
 
-  const vol = audio.createGain();
-  vol.gain.value = 0.25 + 0.75 * loudness;
+  switch (I.sound) {
+    case 'pluck': {
+      const src = audio.createBufferSource();
+      src.buffer = stringNote(id, midi);
+      // Soft plucks sound darker, hard plucks brighter
+      src.connect(filterNode('lowpass', 1200 + 7000 * loudness * loudness, 0.7, out));
+      src.start(t);
+      break;
+    }
+    case 'piano': {
+      // Piano strings are stiff, so each overtone sits slightly sharp of an
+      // exact multiple ("inharmonicity"). Low notes ring longer than high ones.
+      const ring = clamp(4 * Math.pow(220 / f, 0.5), 0.8, 6);
+      const tone = filterNode('lowpass', 2000 + 6000 * loudness, 0.5, out);
+      const list = [];
+      for (let n = 1; n <= 10; n++) list.push([n * Math.sqrt(1 + 0.0004 * n * n), 0.5 / Math.pow(n, 1.1), ring / (1 + 0.5 * (n - 1))]);
+      partials(f, list, t, tone, 0.002);
+      // The felt hammer's thump
+      const thump = gainNode(0, filterNode('lowpass', 1500, 0.7, out));
+      env(thump.gain, t, [[0, 0.0001], [0.002, 0.25 * loudness], [0.04, 0.0001]]);
+      noise(t, 0.05, thump);
+      break;
+    }
+    case 'epiano': {
+      // FM: a modulator wobbles the carrier's pitch. A strong wobble at the
+      // start gives the bell-like "tine" attack; as it fades, the tone mellows.
+      const amp = gainNode(0, out);
+      env(amp.gain, t, [[0, 0.0001], [0.003, 0.6], [2.5, 0.0001]]);
+      const car = osc('sine', f, t, 2.5, amp);
+      const mod = audio.createOscillator();
+      mod.frequency.value = f;
+      const depth = gainNode(0);
+      env(depth.gain, t, [[0, f * (1.5 + 2 * loudness)], [0.8, f * 0.2]]);
+      mod.connect(depth);
+      depth.connect(car.frequency);
+      mod.start(t); mod.stop(t + 2.6);
+      partials(f, [[14, 0.06 * loudness, 0.15]], t, out);      // the tine's ping
+      break;
+    }
+    case 'organ': {
+      // Drawbars: sines at set multiples, held flat while the key is down.
+      // A slow pitch wobble imitates a rotating speaker.
+      const g = swell(out, t, 0.01, L, 0.08, 0.5);
+      const oscs = [[0.5, 0.5], [1, 0.8], [2, 0.6], [3, 0.35], [4, 0.3], [6, 0.15], [8, 0.12]]
+        .filter(([m]) => f * m < 14000)
+        .map(([m, lv]) => osc('sine', f * m, t, L + 0.1, gainNode(lv * 0.35, g)));
+      vibrato(oscs, t, L + 0.1, 6.5, 6, 0);
+      const click = gainNode(0, filterNode('bandpass', 2500, 1, out));
+      env(click.gain, t, [[0, 0.0001], [0.001, 0.08], [0.015, 0.0001]]);
+      noise(t, 0.02, click);
+      break;
+    }
+    case 'marimba':
+      // A wooden bar: the main tone, plus a 4x overtone that dies away fast
+      partials(f, [[1, 0.6, clamp(1.2 * 220 / f, 0.3, 1.5)], [3.98, 0.25 * loudness, 0.12], [9.9, 0.08 * loudness, 0.04]], t, out, 0.002);
+      break;
+    case 'kalimba':
+      // A metal tine: a pure tone with a bright, quickly fading ping on top
+      partials(f, [[1, 0.6, 1.4], [5.9, 0.2 * loudness, 0.09], [8.9, 0.08 * loudness, 0.05]], t, out, 0.002);
+      break;
+    case 'steelpan':
+      // A steel drum's notes have strong overtones at 2x and 3x, a little out of line
+      partials(f, [[1, 0.5, 1.6], [2.01, 0.35, 1.0], [3, 0.18, 0.5], [4.03, 0.08, 0.25]], t, out, 0.004);
+      break;
+    case 'bells':
+      // A bell's overtones are not whole multiples, which is what makes it a bell.
+      // These ratios are the classic ones from Jean-Claude Risset's 1960s bell.
+      partials(f, [[0.56, 0.35, 5], [0.92, 0.25, 3.5], [1.19, 0.3, 2.5], [1.71, 0.25, 2], [2, 0.2, 1.6],
+                   [2.74, 0.18, 1.3], [3, 0.15, 1], [3.76, 0.1, 0.8], [4.07, 0.08, 0.7]], t, out, 0.002);
+      break;
+    case 'bowed': {
+      // A bowed string: a sawtooth (the bow's stick-and-slip motion), shaped by
+      // the wooden body (filters), with vibrato and a little bow noise
+      const g = swell(out, t, 0.09, L, 0.25, 0.45);
+      const body = filterNode('lowpass', I.bright, 0.7, g);
+      const o = osc('sawtooth', f, t, L + 0.4, body);
+      vibrato([o], t, L + 0.4, 5.5, 14, 0.18);
+      const bow = gainNode(0.04 * loudness, filterNode('bandpass', f * 3, 2, g));
+      noise(t, L + 0.3, bow);
+      break;
+    }
+    case 'ensemble': {
+      // A section of strings: three sawtooths, slightly out of tune with each
+      // other, so they thicken like many players at once. Slow to rise.
+      const g = swell(out, t, 0.25, L, 0.5, 0.3);
+      const tone = filterNode('lowpass', 2200, 0.5, g);
+      const oscs = [-8, 0, 8].map(c => { const o = osc('sawtooth', f, t, L + 0.8, tone); o.detune.value = c; return o; });
+      vibrato(oscs, t, L + 0.8, 4.5, 6, 0.3);
+      break;
+    }
+    case 'flute': {
+      // Mostly a pure tone, plus breath: noise tuned near the note
+      const g = swell(out, t, 0.07, L, 0.15, 0.55);
+      const o1 = osc('sine', f, t, L + 0.3, g);
+      const o2 = osc('sine', f * 2, t, L + 0.3, gainNode(0.12, g));
+      vibrato([o1, o2], t, L + 0.3, 5, 10, 0.15);
+      noise(t, L + 0.3, gainNode(0.05 + 0.05 * loudness, filterNode('bandpass', f * 2, 3, g)));
+      break;
+    }
+    case 'brass': {
+      // Brass gets brighter as you blow harder: a filter that opens at the start.
+      // The note also starts a touch flat and slides up, like a lip settling.
+      const g = swell(out, t, 0.03, L, 0.12, 0.4);
+      const tone = filterNode('lowpass', f * 1.5, 1.2, g);
+      env(tone.frequency, t, [[0, f * 1.5], [0.06, f * (6 + 4 * loudness)], [0.3, f * 5]]);
+      const o = osc('sawtooth', f, t, L + 0.2, tone);
+      env(o.detune, t, [[0, -40], [0.06, 0]], 'lin');
+      vibrato([o], t, L + 0.2, 5.5, 8, 0.3);
+      break;
+    }
+    case 'voices': {
+      // "Aah": a buzzy tone through three narrow filters at the resonances of
+      // an open mouth (called formants). Two voices, slightly apart.
+      const g = swell(out, t, 0.2, L, 0.4, 0.9);
+      const mouth = gainNode(1);
+      for (const [fr, q, lv] of [[800, 8, 1], [1150, 9, 0.6], [2900, 10, 0.25]]) mouth.connect(filterNode('bandpass', fr, q, gainNode(lv, g)));
+      const oscs = [-6, 6].map(c => { const o = osc('sawtooth', f, t, L + 0.6, mouth); o.detune.value = c; return o; });
+      vibrato(oscs, t, L + 0.6, 5, 15, 0.2);
+      break;
+    }
+    case 'synth': {
+      // Two buzzy oscillators and a filter that sweeps closed: the classic analog pluck
+      const g = swell(out, t, 0.005, L * 0.7, 0.25, 0.35);
+      const tone = filterNode('lowpass', 4000, 6, g);
+      env(tone.frequency, t, [[0, 600 + 5000 * loudness], [0.35, 700]]);
+      for (const c of [-10, 10]) { const o = osc('sawtooth', f, t, L + 0.3, tone); o.detune.value = c; }
+      osc('square', f / 2, t, L + 0.3, gainNode(0.3, tone));
+      break;
+    }
+    case 'sub': {
+      // The 808: a sine that starts high and drops to the note in a blink,
+      // then booms. Gentle distortion adds overtones, so laptop speakers can play it.
+      const amp = gainNode(0, out);
+      env(amp.gain, t, [[0, 0.0001], [0.005, 0.9], [1.4, 0.0001]]);
+      const shaper = audio.createWaveShaper();
+      const curve = new Float32Array(512);
+      for (let i = 0; i < 512; i++) { const x = i / 255.5 - 1; curve[i] = Math.tanh(2.2 * x); }
+      shaper.curve = curve;
+      shaper.connect(amp);
+      const o = osc('sine', f, t, 1.4, shaper);
+      env(o.frequency, t, [[0, f * 3], [0.05, f]]);
+      break;
+    }
+  }
+}
 
-  src.connect(tone);
-  tone.connect(vol);
-  vol.connect(master);
-  vol.connect(reverbIn);
-  src.start(t);
+// ── 12d. Drums ───────────────────────────────────────────────
+// On a drum string, every zone is a different drum, low sounds at the low
+// end. Each drum is built from a tone that drops in pitch (the skin), and
+// filtered noise (snares, cymbals, slaps).
+const DRUM_KITS = {
+  drums:     ['Kick', 'Low tom', 'Snare', 'High tom', 'Clap', 'Closed hat', 'Open hat', 'Crash'],
+  handdrums: ['Doum', 'Low conga', 'Slap', 'High conga', 'Tek', 'Ka', 'Shaker'],
+};
+
+function playDrum(id, name, loudness, t) {
+  if (!audio) return;
+  t = Math.max(t || 0, audio.currentTime);
+  const out = gainNode(0.3 + 0.7 * loudness, busFor(id));
+
+  // A skin: a tone that falls from f0 to f1, fading over "fade" seconds
+  const skin = (f0, f1, drop, fade, level, type = 'sine') => {
+    const g = gainNode(0, out);
+    env(g.gain, t, [[0, 0.0001], [0.002, level], [fade, 0.0001]]);
+    const o = osc(type, f0, t, fade, g);
+    env(o.frequency, t, [[0, f0], [drop, f1]]);
+  };
+  // A burst of noise through a filter
+  const hiss = (type, freq, q, fade, level, at = 0) => {
+    const g = gainNode(0, filterNode(type, freq, q, out));
+    env(g.gain, t + at, [[0, 0.0001], [0.002, level], [fade, 0.0001]]);
+    noise(t + at, fade, g);
+  };
+
+  switch (name) {
+    case 'Kick':       skin(160, 45, 0.1, 0.5, 1);  hiss('lowpass', 3000, 0.7, 0.015, 0.3); break;
+    case 'Low tom':    skin(140, 95, 0.15, 0.45, 0.8); break;
+    case 'Snare':      skin(220, 180, 0.05, 0.12, 0.45, 'triangle'); hiss('bandpass', 2200, 0.8, 0.2, 0.7); break;
+    case 'High tom':   skin(210, 150, 0.12, 0.35, 0.75); break;
+    case 'Clap':       for (const at of [0, 0.011, 0.023]) hiss('bandpass', 1300, 1.5, 0.03, 1.8, at); hiss('bandpass', 1300, 1.2, 0.25, 1.1, 0.03); break;
+    case 'Closed hat': hiss('highpass', 7500, 0.7, 0.05, 0.45); break;
+    case 'Open hat':   hiss('highpass', 7000, 0.7, 0.4, 0.35); break;
+    case 'Crash':      hiss('highpass', 4500, 0.5, 1.6, 0.35); hiss('bandpass', 6500, 1, 0.8, 0.2); break;
+    // Hand drums. Doum and tek are the deep centre and the sharp rim of a darbuka.
+    case 'Doum':       skin(110, 75, 0.08, 0.6, 0.9); hiss('lowpass', 800, 0.7, 0.03, 0.2); break;
+    case 'Low conga':  skin(210, 190, 0.05, 0.35, 0.7); hiss('bandpass', 1200, 1, 0.03, 0.15); break;
+    case 'Slap':       skin(330, 300, 0.03, 0.12, 0.35); hiss('bandpass', 1600, 1.2, 0.12, 0.6); break;
+    case 'High conga': skin(320, 290, 0.05, 0.28, 0.65); hiss('bandpass', 1800, 1, 0.03, 0.15); break;
+    case 'Tek':        skin(900, 820, 0.02, 0.06, 0.35); hiss('bandpass', 3200, 1.5, 0.07, 0.5); break;
+    case 'Ka':         skin(700, 650, 0.02, 0.05, 0.4); hiss('bandpass', 2600, 1.5, 0.05, 0.55); break;
+    case 'Shaker': {
+      const g = gainNode(0, filterNode('highpass', 6000, 0.7, out));
+      env(g.gain, t, [[0, 0], [0.04, 0.35], [0.14, 0]], 'lin');
+      noise(t, 0.15, g);
+      break;
+    }
+  }
 }
 
 // ── 13. Plucking ─────────────────────────────────────────────
@@ -835,14 +1203,17 @@ function checkPluck(id, p, now) {
 // u = where along the string (0 at peg a, 1 at peg b); fromSide = which side the finger came from
 function pluck(s, u, loudness, fromSide = 1) {
   const z = zoneAt(s, u);
-  const { notes, label } = zoneNotes(s, z);
-
-  // A chord is strummed: each note a little after the last, like a pick
-  // crossing guitar strings. Sweep one way and it goes low to high; sweep
-  // back and it goes high to low.
-  const order = fromSide > 0 ? notes : [...notes].reverse();
+  const { notes, drum, label } = zoneNotes(s, z);
   const t = audio ? audio.currentTime : 0;
-  order.forEach((m, i) => playString(m, loudness * (notes.length > 1 ? 0.6 : 1), t + i * STRUM_GAP));
+
+  if (drum) playDrum(s.inst, drum, loudness, t);
+  else {
+    // A chord is strummed: each note a little after the last, like a pick
+    // crossing guitar strings. Sweep one way and it goes low to high; sweep
+    // back and it goes high to low.
+    const order = fromSide > 0 ? notes : [...notes].reverse();
+    order.forEach((m, i) => playNote(s.inst, m, loudness * (notes.length > 1 ? 0.6 : 1), t + i * STRUM_GAP));
+  }
 
   s.wobble = 6 + 18 * loudness;
   s.wobbleAt = performance.now();
@@ -989,6 +1360,13 @@ function drawString(s) {
     ctx.arc(m.x, m.y, 8, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+
+    // The instrument's name, just off the string, on the side away from the menu
+    ctx.font = '600 13px "Bricolage Grotesque", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COLORS.dust;
+    const side = ny > 0 ? 1 : -1;    // push the label downward, whichever way the string slopes
+    ctx.fillText(INSTRUMENTS[s.inst].name, m.x + nx * 26 * side, m.y + ny * 26 * side + 4);
 
     // A fingertip is holding the dot: a ring fills around it
     const k = dotHoldProgress(s);
@@ -1220,7 +1598,10 @@ const midiToPitch = m => 440 * Math.pow(2, (m - 69) / 12);
 const noteName = m => NOTE_NAMES[((m % 12) + 12) % 12];
 
 function zoneCount(s) {
-  return clamp(Math.round(dist(s.a, s.b) / ZONE_SIZE), MIN_ZONES, MAX_ZONES);
+  const n = clamp(Math.round(dist(s.a, s.b) / ZONE_SIZE), MIN_ZONES, MAX_ZONES);
+  // A drum string has one zone per drum in its kit, at most
+  const kit = DRUM_KITS[s.inst];
+  return kit ? Math.min(n, kit.length) : n;
 }
 
 // The low end is the left peg. On a steep string (closer to upright than
@@ -1252,6 +1633,9 @@ function degree(s, scaleId, d) {
 // Pentatonic and blues scales are too gappy to build chords this way,
 // so they borrow chords from their parent scale.
 function zoneNotes(s, z) {
+  // Drum strings: each zone is a drum, not a note
+  const kit = DRUM_KITS[s.inst];
+  if (kit) return { drum: kit[z], label: kit[z] };
   if (s.mode === 'chords') {
     const sc = SCALES[s.scale].parent || s.scale;
     const notes = [0, 2, 4].map(k => degree(s, sc, z + k));
@@ -1366,7 +1750,23 @@ function layoutMenu() {
   placeMenu(rows);
 }
 
+const INSTRUMENT_SHORT = { egtr: 'E-guitar', epiano: 'E-piano', handdrums: 'Hand drums', bass808: '808 bass', steelpan: 'Steel pan' };
 function buildStringRows(s, rows) {
+  // Instruments: four rows of six, one family per row
+  for (let fam = 0; fam < 4; fam++) {
+    rows.push({ title: fam === 0 ? 'Instrument' : '', tight: fam > 0, items: INSTRUMENT_ORDER.filter(id => INSTRUMENTS[id].family === fam).map(id => ({
+      label: INSTRUMENT_SHORT[id] || INSTRUMENTS[id].name, w: 104, on: () => s.inst === id, act: () => { s.inst = id; },
+    })) });
+  }
+  // Drums have no notes, so scale, key, chords and octave don't apply: hide them
+  if (DRUM_KITS[s.inst]) {
+    rows.push({ title: '', items: [
+      { label: 'Delete string', w: 130, danger: true, act: () => { removeString(s); } },
+      { gap: 24 },
+      { label: 'Done', w: 100, act: () => { closeMenu(); } },
+    ] });
+    return;
+  }
   rows.push({ title: 'Scale', items: SCALE_ORDER.map(id => ({ label: SCALE_SHORT[id], w: 84, on: () => s.scale === id, act: () => { s.scale = id; } })) });
   rows.push({ title: 'Key', items: NOTE_NAMES.map((n, k) => ({ label: n, w: 48, on: () => s.key === k, act: () => { s.key = k; } })) });
   rows.push({ title: 'Play and octave', items: [
@@ -1386,7 +1786,8 @@ function placeMenu(rows) {
   const PAD = 16, GAP = 8, H = 40, TITLE = 22;
   const rowW = r => r.items.reduce((w, it) => w + (it.gap || it.w) + GAP, -GAP);
   const W = Math.max(...rows.map(rowW)) + PAD * 2;
-  const Ht = PAD * 2 + rows.reduce((h, r) => h + (r.title ? TITLE : 0) + H + GAP * 1.5, 0);
+  const rowGap = r => r.tight ? GAP : GAP * 1.5;                   // the instrument rows sit closer together
+  const Ht = PAD * 2 + rows.reduce((h, r) => h + (r.title ? TITLE : 0) + H + rowGap(r), 0);
 
   let x, y;
   if (menu.kind === 'string') {
@@ -1415,7 +1816,7 @@ function placeMenu(rows) {
       menu.items.push({ ...it, x: cx, y: cy, h: H });
       cx += it.w + GAP;
     }
-    cy += H + GAP * 1.5;
+    cy += H + rowGap(r);
   }
 }
 
@@ -1430,7 +1831,10 @@ function chooseItem(it) {
   menu.hover = {};
   if (kind === 'string') {
     // A string menu stays open for more choices. Play the string quietly so you hear it.
-    if (menu.open && strings.includes(s)) pluck(s, 0.5, 0.35, 1);
+    if (menu.open && strings.includes(s)) {
+      layoutMenu();     // the rows can change: drums hide the note settings
+      pluck(s, 0.5, 0.35, 1);
+    }
   } else {
     // A top-bar panel is a single choice: close it, and play the first string as a preview
     closeMenu();
@@ -1594,7 +1998,7 @@ function dotHoldProgress(s) {
 }
 
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>
