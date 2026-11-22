@@ -15,15 +15,15 @@ Inspired by Hashem Al-Ghaili's Music Maker, but this is my own version with my o
 
 ## Next step
 
-Open Stage 1, check the dots follow both hands, try the experiments in `lessons/stage-1.md`.
-Then start Stage 2: detect a pinch.
+Test Stage 2: pinch with each hand, then both, and tune the two sliders.
+Then start Stage 3: one string that beeps when a fingertip crosses it.
 
 ## Stages
 
 | Stage | What it adds | Lesson |
 | ----- | ------------ | ------ |
 | 1 | Camera on, dots on your fingertips | [stage-1.md](lessons/stage-1.md) |
-| 2 | Detect a pinch | - |
+| 2 | Detect a pinch | [stage-2.md](lessons/stage-2.md) |
 | 3 | One fixed string that beeps when you cross it | - |
 | 4 | Karplus-Strong, so the beep sounds like a plucked string | - |
 | 5 | Pinch with both hands to create strings | - |
@@ -32,6 +32,8 @@ Then start Stage 2: detect a pinch.
 
 ## Notes
 
+- Live at https://chl0key.github.io/air-strings/ (GitHub Pages, from `main`)
+- Each stage arrives on a branch, and I merge it into `main` to put it live
 - Reference: https://github.com/Hashem-Al-Ghaili/music-maker
   - The repo has no license, so we learn from its ideas and write our own code
 - Needs Chrome or Edge, good light, and hands about 40-80 cm from the camera
