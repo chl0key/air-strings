@@ -16,8 +16,8 @@ His repo has no license, so this matches what it does, in my own code, name and 
 
 ## Next step
 
-Test Stage 6: listen to the new string sound, soft and hard plucks, and strum chords hard to check for crackle.
-Then Stage 7: the string menu, picked by hand.
+Test Stage 7: open a string's menu by pinching its middle dot, choose by pinch and by hovering, press a top-bar button by hand.
+Then Stage 8: all 24 instruments, drums included.
 
 ## Stages
 
@@ -29,8 +29,8 @@ Then Stage 7: the string menu, picked by hand.
 | 4 | Precise pinch, pinch jobs, make, drag and delete strings | [stage-4.md](lessons/stage-4.md) |
 | 5 | Notes and scales along each string, longer strings hold more notes, chord mode | [stage-5.md](lessons/stage-5.md) |
 | 6 | Real string sound (Karplus-Strong) and reverb | [stage-6.md](lessons/stage-6.md) |
-| 7 | The string menu: instrument, scale and key, by pointing or pinching | - |
-| 8 | All 24 instruments, drums included | - |
+| 7 | The string menu: scale, key, notes or chords, octave, by pinching or hovering | [stage-7.md](lessons/stage-7.md) |
+| 8 | All 24 instruments, drums included, chosen from the string menu | - |
 | 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | - |
 | 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | - |
 | 11 | Beats: 6 patterns, one part at a time, on a steady clock | - |
