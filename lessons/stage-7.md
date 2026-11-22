@@ -110,3 +110,29 @@
 - Every string still sounds like the same guitar
 - His version has 24 instruments, including drums, all played the same way
 - How might a drum be "plucked" along a string?
+
+## Fix after testing: point with your fingertip
+
+**What happened**
+- The menu only reacted when the ring landed on an option, not your fingertip
+- The ring was the pinch point, halfway between thumb and index tip
+  - With an open hand, that's empty space between your fingers, not where you're pointing
+
+**What changed**
+- Each hand now has one **pointer** (`h.cursor` in section 9)
+  - Open hand: the index fingertip
+  - Closing into a pinch: it slides smoothly to the pinch point
+  - At the moment of the pinch they're nearly the same spot, so nothing jumps
+- The pointer drives the menu, the top-bar buttons, and the aiming rings on pegs and dots
+- While a pinch is held, a dragged peg follows the pinch point itself
+  - Before, it drifted about 30 px toward your fingertip as you let go
+
+**Tested**
+- Fingertip on **E** with the thumb far away chose **E**
+  - The old in-between point was over a different option
+- The old in-between point on **A**, with the fingertip elsewhere, chose nothing
+- Pointing at **G** and bringing the thumb up to pinch chose **G**
+- A dragged peg now lands exactly where you let go
+- Every earlier test still passes
+
+**Setting:** `POINTER_OPEN` in section 2 is how open the hand must be for the pointer to sit fully on the fingertip

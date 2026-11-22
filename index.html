@@ -172,7 +172,8 @@ const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmar
 //    17-20 = pinky    (17 is the knuckle, 20 is the tip)
 const WRIST = 0, THUMB_TIP = 4, INDEX_KNUCKLE = 5, INDEX_TIP = 8, MIDDLE_KNUCKLE = 9, PINKY_KNUCKLE = 17;
 const FINGERTIPS = [4, 8, 12, 16, 20];
-const PALM_WIDTH_SCALE = 1.4;   // a flat, facing palm is about 1.4 times as long as it is wide
+const PALM_WIDTH_SCALE = 1.4;
+const POINTER_OPEN = 0.5;       // pinch ratio at which the pointer is fully on the index fingertip   // a flat, facing palm is about 1.4 times as long as it is wide
 
 const BONES = [
   [0, 1], [1, 2], [2, 3], [3, 4],          // thumb
@@ -350,6 +351,7 @@ function newHand() {
     seen: 0,
     ratio: 1, pinched: false, streak: 0, flash: 0,
     at: { x: 0, y: 0 },        // the pinch point, halfway between thumb and index tips
+    cursor: { x: 0, y: 0 },    // where the hand is aiming: index tip when open, pinch point when pinched
     released: -9,              // when this hand last let go of a pinch
   };
 }
@@ -410,6 +412,13 @@ function updatePinch(j, h, now) {
   h.ratio = dist(p[THUMB_TIP], p[INDEX_TIP]) / Math.max(palmLength, palmWidth, 1);
   h.at = mid(p[THUMB_TIP], p[INDEX_TIP]);
 
+  // The pointer: where this hand is aiming.
+  // Open hand → the index fingertip, where you'd expect a pointing finger to be.
+  // Closing into a pinch → it slides to the pinch point, where thumb and finger meet.
+  // The slide is smooth, so the pointer never jumps as you pinch.
+  const k = clamp((h.ratio - settings.closeAt) / (POINTER_OPEN - settings.closeAt), 0, 1);
+  h.cursor = { x: lerp(h.at.x, p[INDEX_TIP].x, k), y: lerp(h.at.y, p[INDEX_TIP].y, k) };
+
   // A hand that has only just come into view is often misread for a few
   // frames, so it isn't allowed to start a pinch until it has settled.
   if (!h.pinched && now - h.born < settings.settleTime) { h.streak = 0; return; }
@@ -420,7 +429,7 @@ function updatePinch(j, h, now) {
   h.streak = 0;
   h.pinched = !h.pinched;
   h.flash = performance.now();
-  if (h.pinched) pinchStart('hand' + j, h.at, now);
+  if (h.pinched) pinchStart('hand' + j, h.cursor, now);
   else { pinchEnd('hand' + j, now); h.released = now; }
 }
 
@@ -447,7 +456,9 @@ let preview = null;        // { a, b } while a new string is being stretched
 function pointOf(who) {
   if (who === 'mouse') return { x: mouse.x, y: mouse.y };
   const h = slots[+who.slice(4)];
-  return h ? h.at : null;
+  // While a pinch is held, things follow the pinch point itself, so a peg
+  // doesn't drift as your fingers open to let go
+  return h ? (h.pinched ? h.at : h.cursor) : null;
 }
 
 function pinchStart(who, p, now) {
@@ -1013,7 +1024,7 @@ function drawHand(h, i) {
   ctx.fillStyle = color;
   for (const k of FINGERTIPS) dot(p[k], k === INDEX_TIP ? 9 : 6);   // the index tip plucks, so it's biggest
 
-  drawAim(h.at, color, h.pinched, h.flash);
+  drawAim(h.cursor, color, h.pinched, h.flash);
 }
 
 // The pinch point. When it's near a peg, the peg gets a ring, so you can
@@ -1318,7 +1329,7 @@ function updateMenu(now) {
   slots.forEach((h, j) => {
     const id = 'hand' + j;
     if (!h || h.pinched) { delete menu.hover[id]; return; }
-    const it = menuItemAt(h.at);
+    const it = menuItemAt(h.cursor);
     const hv = menu.hover[id];
     if (!it) { delete menu.hover[id]; return; }
     menu.touched = now;
@@ -1408,7 +1419,7 @@ function buttonAt(p) {
 
 function updateButtonHover() {
   const hovered = new Set();
-  slots.forEach(h => { if (h) { const b = buttonAt(h.at); if (b) hovered.add(b); } });
+  slots.forEach(h => { if (h) { const b = buttonAt(h.cursor); if (b) hovered.add(b); } });
   for (const b of document.querySelectorAll('#bar button')) b.classList.toggle('hand-hover', hovered.has(b));
 }
 
