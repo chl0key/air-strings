@@ -103,7 +103,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 10: pinch empty air with one hand and drag while you play. Down makes everything darker, up makes it thinner, sideways adds echo. Let go and it all comes back. With the mouse, hold Shift and drag.</p>
+  <p>Stage 11: press Beat at the top right, pick a pattern, and switch on its parts one at a time: kick, snare, hats, bass, chords. Then play along on your strings.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -115,6 +115,7 @@
   <button id="keyBtn" title="Choose the key for every string"></button>
   <button id="scaleBtn" title="Choose the scale for every string"></button>
   <button id="modeBtn" title="Single notes or chords"></button>
+  <button id="beatBtn" title="Backing beat: pattern, parts, tempo, play and stop"></button>
   <button id="clear">Clear strings</button>
 </div>
 <div id="toast"></div>
@@ -129,10 +130,15 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 10: the air pad
+//  AIR STRINGS · Stage 11: beats
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • Six beat patterns, five parts switched on one at a time (section 26)
+//    • A look-ahead scheduler on the audio clock, so the beat never wobbles
+//    • Bass and chords follow the top bar's key and scale
+//
+//  From Stage 10:
 //    • One hand pinches empty air and drags: down darker, up thinner, sideways echo (section 25)
 //    • With the mouse: hold Shift and drag
 //
@@ -1353,6 +1359,7 @@ function loop() {
   updateMenu(now);
   updateButtonHover(now);
   updateDotHold(now);
+  if (beat.dirty) { beat.dirty = false; showMusic(); }
   plucking(now);
   updateHolds(now);
   draw();
@@ -1384,6 +1391,7 @@ function draw() {
   for (const s of strings) drawString(s);
   drawPreview();
   drawAirPad();
+  drawBeatLights();
   drawBursts();
   drawPops();
   drawMenu();
@@ -1624,7 +1632,7 @@ const METER_MAX = 1.2;
 const pct = v => clamp(v / METER_MAX, 0, 1) * 100 + '%';
 
 function updatePanel() {
-  $('fps').textContent = `Hands: ${slots.filter(Boolean).length} · Tracking ${fps} times a second`;
+  $('fps').textContent = `Hands: ${slots.filter(Boolean).length}, tracking ${fps} times a second`;
   slots.forEach((h, i) => {
     const m = $('m' + i);
     const fill = m.querySelector('.fill');
@@ -1707,7 +1715,16 @@ const SCALES = {
 };
 const SCALE_ORDER = Object.keys(SCALES);
 
-const music = { key: 0, scale: 'major', mode: 'notes' };   // key 0 = C, 1 = C♯ ... 11 = B
+const music = { key: 0, scale: 'major', mode: 'notes' };
+
+// The backing beat's state (Stage 11, section 26). It lives up here because
+// the top bar shows whether the beat is playing from the moment the page loads.
+const beat = {
+  playing: false, pattern: 'boombap', bpm: 90,
+  parts: { kick: false, snare: false, hats: false, bass: false, chords: false },
+  step: 0, nextTime: 0, timer: null, dirty: false,
+  booked: [],                      // recently booked steps and their times, for the lights
+};   // key 0 = C, 1 = C♯ ... 11 = B
 
 const midiToPitch = m => 440 * Math.pow(2, (m - 69) / 12);
 const noteName = m => NOTE_NAMES[((m % 12) + 12) % 12];
@@ -1778,6 +1795,7 @@ function showMusic() {
   $('keyBtn').textContent = 'Key: ' + NOTE_NAMES[music.key];
   $('scaleBtn').textContent = SCALES[music.scale].name;
   $('modeBtn').textContent = music.mode === 'notes' ? 'Single notes' : 'Chords';
+  $('beatBtn').textContent = beat.playing ? 'Beat ●' : 'Beat';
 }
 // Key and Scale have many choices, so they open a panel. Notes/Chords has
 // two, so it just switches. Pressing a button again closes its panel.
@@ -1799,6 +1817,7 @@ const BUTTON_LABELS = {
   keyBtn: () => NOTE_NAMES.map(n => 'Key: ' + n),
   scaleBtn: () => SCALE_ORDER.map(id => SCALES[id].name),
   modeBtn: () => ['Single notes', 'Chords'],
+  beatBtn: () => ['Beat', 'Beat ●'],
 };
 function fixButtonWidths() {
   if ($('bar').classList.contains('hidden')) return;   // can't measure what isn't shown
@@ -1861,7 +1880,8 @@ function layoutMenu() {
   } else if (menu.kind === 'scale') {
     rows.push({ title: 'Scale for every string', items: SCALE_ORDER.map(id => ({ label: SCALE_SHORT[id], w: 84, on: () => music.scale === id, act: () => setAll('scale', id) })) });
     rows.push({ title: '', items: [{ label: 'Done', w: 100, quiet: true, act: () => {} }] });
-  } else buildStringRows(s, rows);
+  } else if (menu.kind === 'beat') buildBeatRows(rows);
+  else buildStringRows(s, rows);
   placeMenu(rows);
 }
 
@@ -1936,7 +1956,7 @@ function placeMenu(rows) {
 }
 
 function menuItemAt(p) {
-  return menu.items.find(it => p.x >= it.x && p.x <= it.x + it.w && p.y >= it.y && p.y <= it.y + it.h) || null;
+  return menu.items.find(it => !it.display && p.x >= it.x && p.x <= it.x + it.w && p.y >= it.y && p.y <= it.y + it.h) || null;
 }
 
 function chooseItem(it) {
@@ -1950,6 +1970,9 @@ function chooseItem(it) {
       layoutMenu();     // the rows can change: drums hide the note settings
       pluck(s, 0.5, 0.35, 1);
     }
+  } else if (kind === 'beat') {
+    // The beat panel stays open: you switch parts on one at a time
+    if (menu.open) layoutMenu();
   } else {
     // A top-bar panel is a single choice: close it, and play the first string as a preview
     closeMenu();
@@ -2013,9 +2036,9 @@ function drawMenu() {
   const hovered = new Map(Object.values(menu.hover).map(h => [h.it, h]));
   for (const it of menu.items) {
     const on = it.on && it.on(), hv = hovered.get(it);
-    ctx.fillStyle = on ? COLORS.hands[0] : it.danger ? COLORS.room : COLORS.room;
+    ctx.fillStyle = on ? COLORS.hands[0] : COLORS.room;
     roundRect(it.x, it.y, it.w, it.h, 10);
-    ctx.fill();
+    if (!it.display) ctx.fill();      // a display item is just text, like the tempo
     if (hv) {
       ctx.strokeStyle = it.danger ? COLORS.hands[1] : COLORS.bone;
       ctx.lineWidth = 2;
@@ -2363,8 +2386,198 @@ function drawAirPad() {
   dot(from, 5);
 }
 
+// ── 26. Beats ────────────────────────────────────────────────
+// A backing beat: a pattern of 16 steps per bar (each step a sixteenth
+// note), looping. Five parts, switched on one at a time.
+//
+// In a pattern line, each character is one step:
+//   x = hit, X = accented hit (louder), o = open hi-hat, - = rest
+//   bass: 0 = the chord's root note, 3 = its third, 5 = its fifth, 8 = the root an octave up
+// A part can have two lines: they take turns, one bar each.
+//
+// Bass and chords follow a chord progression, one chord per bar, built from
+// the top bar's key and scale. So whatever you play on the strings fits.
+const BEATS = {
+  boombap: { name: 'Boom bap', bpm: 90, swing: 0.12, chords: 'epiano', bass: 'bass',
+    kick: ['X-----x---x-----', 'X-----x-x-----x-'], snare: ['----X-------X---'], hats: ['x-x-x-x-x-x-x-x-'],
+    bassLine: ['0-----0---5-----', '0-----0-8---5---'], stabs: ['x---------x-----'] },
+  house: { name: 'House', bpm: 122, swing: 0, chords: 'organ', bass: 'synth',
+    kick: ['X---X---X---X---'], snare: ['----x-------x---'], hats: ['x-o-x-o-x-o-x-o-'],
+    bassLine: ['--0---0---0---0-', '--0---0---5---8-'], stabs: ['--x--x----x--x--'] },
+  lofi: { name: 'Lo-fi', bpm: 78, swing: 0.16, chords: 'epiano', bass: 'bass',
+    kick: ['X------x--X-----', 'X-------x-X-----'], snare: ['----X-------X---'], hats: ['x-x-x-x-x-x-x-xx'],
+    bassLine: ['0-------3-----5-'], stabs: ['x-------x-------'] },
+  trap: { name: 'Trap', bpm: 140, swing: 0, chords: 'bells', bass: 'bass808',
+    kick: ['X-----X---X--x--', 'X-----X-------x-'], snare: ['--------X-------'], hats: ['xxxxxxxxxxxxxxxx', 'xxxxxxxxxxxxx-xx'],
+    bassLine: ['0-----0---0-----', '0-----5-------8-'], stabs: ['x---------------'] },
+  dembow: { name: 'Reggaeton', bpm: 96, swing: 0, chords: 'synth', bass: 'bass',
+    kick: ['X---X---X---X---'], snare: ['---x--x----x--x-'], hats: ['x-x-x-x-x-x-x-x-'],
+    bassLine: ['0-------0---5---'], stabs: ['x-----x---x-----'] },
+  maqsum: { name: 'Maqsum', bpm: 100, swing: 0, chords: 'qanun', bass: 'bass', kit: 'handdrums',
+    // Maqsum on a darbuka: doum, tek, (rest), tek, doum, (rest), tek, (rest)
+    kick: ['X-------X-------'], snare: ['--X---X-----X---'], hats: ['x-x-x-x-x-x-x-x-'],
+    bassLine: ['0-------0---5---'], stabs: ['x-------x-------'] },
+};
+const BEAT_ORDER = Object.keys(BEATS);
+const PARTS = [['kick', 'Kick'], ['snare', 'Snare'], ['hats', 'Hats'], ['bass', 'Bass'], ['chords', 'Chords']];
+
+// Which drum sound each part uses, for the regular kit and the hand-drum kit
+const KIT_SOUNDS = {
+  drums:     { kick: 'Kick', snare: 'Snare', hat: 'Closed hat', open: 'Open hat' },
+  handdrums: { kick: 'Doum', snare: 'Tek',   hat: 'Ka',         open: 'Slap' },
+};
+// A chord progression for each scale, as scale steps (0 = the key's own chord)
+const PROGRESSIONS = { major: [0, 4, 5, 3], minor: [0, 5, 2, 6], dorian: [0, 3, 0, 6], hijaz: [0, 1, 0, 6] };
+const BEAT_LEVEL = 0.8;            // the beat sits a little under what you play
+
+
+// How long one step lasts: a beat is 60/bpm seconds, and a step is a quarter of a beat
+const stepLength = () => 60 / beat.bpm / 4;
+
+// ── The look-ahead scheduler ──
+// Browser timers (setInterval) are unreliable: when the page is busy drawing
+// or tracking hands, a timer can fire tens of milliseconds late. Notes
+// played straight from a timer would wobble.
+//
+// The audio clock never wobbles. So the timer only plans ahead: every 25 ms
+// it books every step due in the next LOOKAHEAD seconds, each at its exact
+// time on the audio clock. Even if a timer fires late, the notes it books
+// were already booked by an earlier one, with time to spare.
+const LOOKAHEAD = 0.12;    // seconds booked ahead
+const TICK = 25;           // milliseconds between planning runs
+
+function startBeat() {
+  startAudio();
+  if (beat.playing) return;
+  if (!Object.values(beat.parts).some(Boolean)) beat.parts.kick = true;   // never start silent
+  beat.playing = true;
+  beat.step = 0;
+  beat.nextTime = audio.currentTime + 0.06;
+  beat.booked = [];
+  beat.timer = setInterval(planAhead, TICK);
+  planAhead();
+  beat.dirty = true;
+}
+function stopBeat() {
+  beat.playing = false;
+  clearInterval(beat.timer);
+  beat.dirty = true;
+}
+
+function planAhead() {
+  if (!beat.playing) return;
+  while (beat.nextTime < audio.currentTime + LOOKAHEAD) {
+    playStep(beat.step, beat.nextTime);
+    beat.booked.push({ i: beat.step % 16, t: beat.nextTime });
+    if (beat.booked.length > 32) beat.booked.shift();
+    beat.step++;
+    beat.nextTime += stepLength();
+  }
+}
+
+// Swing: every second sixteenth is pushed a little late, which gives a
+// laid-back, human groove instead of a stiff, machine one.
+function swungTime(step, t) {
+  const B = BEATS[beat.pattern];
+  return step % 2 === 1 ? t + B.swing * stepLength() : t;
+}
+
+function playStep(step, t) {
+  const B = BEATS[beat.pattern], bar = Math.floor(step / 16), i = step % 16;
+  const at = swungTime(i, t);
+  const line = lines => lines[bar % lines.length][i];
+  const kit = B.kit || 'drums', K = KIT_SOUNDS[kit];
+  const vel = ch => (ch === 'X' ? 0.95 : 0.65) * BEAT_LEVEL;
+
+  if (beat.parts.kick)  { const c = line(B.kick);  if (c !== '-') playDrum(kit, K.kick, vel(c), at); }
+  if (beat.parts.snare) { const c = line(B.snare); if (c !== '-') playDrum(kit, K.snare, vel(c), at); }
+  if (beat.parts.hats)  { const c = line(B.hats);  if (c !== '-') playDrum(kit, c === 'o' ? K.open : K.hat, (i % 4 === 0 ? 0.6 : 0.4) * BEAT_LEVEL, at); }
+
+  const chord = chordForBar(bar);
+  if (beat.parts.bass) {
+    const c = line(B.bassLine);
+    if (c !== '-') {
+      const offset = { 0: 0, 3: 2, 5: 4, 8: 7 }[c] || 0;          // scale steps up from the chord's root
+      playNote(B.bass, beatNote(chord + offset) - 12, 0.75 * BEAT_LEVEL, at);
+    }
+  }
+  if (beat.parts.chords && line(B.stabs) !== '-') {
+    [0, 2, 4].forEach((k, n) => playNote(B.chords, beatNote(chord + k), 0.45 * BEAT_LEVEL, at + n * 0.006));
+  }
+}
+
+// This bar's chord, as a scale step. The progression loops every 4 bars.
+function chordForBar(bar) {
+  const parent = SCALES[music.scale].parent || music.scale;
+  const prog = PROGRESSIONS[parent] || PROGRESSIONS.major;
+  return prog[bar % prog.length];
+}
+// A scale step as a MIDI note, in the top bar's key and the parent scale
+function beatNote(d) {
+  const parent = SCALES[music.scale].parent || music.scale;
+  return degree({ key: music.key, oct: 0 }, parent, d);
+}
+
+// Where the beat is right now, as a step from 0 to 15 (or -1 when stopped)
+// (The latest booked step whose time has come. Reading the bookings, not
+// working it out from the tempo, keeps the lights right when the tempo changes.)
+function currentStep() {
+  if (!beat.playing || !audio) return -1;
+  let cur = -1;
+  for (const b of beat.booked) if (b.t <= audio.currentTime) cur = b.i;
+  return cur;
+}
+
+// 16 lights in the top left: the current step glows, and every fourth light is bigger (the beats)
+function drawBeatLights() {
+  if (!beat.playing) return;
+  const cur = currentStep();
+  for (let i = 0; i < 16; i++) {
+    ctx.fillStyle = i === cur ? COLORS.hands[0] : COLORS.dust;
+    ctx.globalAlpha = i === cur ? 1 : 0.35;
+    dot({ x: 24 + i * 16 + Math.floor(i / 4) * 6, y: 34 }, i % 4 === 0 ? 5 : 3.5);
+  }
+  ctx.globalAlpha = 1;
+  ctx.font = '600 13px "Bricolage Grotesque", sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COLORS.dust;
+  ctx.fillText(`${BEATS[beat.pattern].name} at ${beat.bpm} BPM`, 24, 60);
+}
+
+// The beat panel: pattern, parts, tempo, play/stop
+function buildBeatRows(rows) {
+  rows.push({ title: 'Pattern', items: BEAT_ORDER.map(id => ({
+    label: BEATS[id].name, w: 100, on: () => beat.pattern === id,
+    act: () => { beat.pattern = id; beat.bpm = BEATS[id].bpm; },
+  })) });
+  rows.push({ title: 'Parts: switch on one at a time', items: PARTS.map(([id, label]) => ({
+    label, w: 84, on: () => beat.parts[id],
+    act: () => { beat.parts[id] = !beat.parts[id]; if (beat.parts[id] && !beat.playing) startBeat(); },
+  })) });
+  rows.push({ title: 'Tempo', items: [
+    { label: '−10', w: 56, act: () => { beat.bpm = clamp(beat.bpm - 10, 50, 180); } },
+    { label: '−1', w: 48, act: () => { beat.bpm = clamp(beat.bpm - 1, 50, 180); } },
+    { label: `${beat.bpm} BPM`, w: 90, display: true, act: () => {} },
+    { label: '+1', w: 48, act: () => { beat.bpm = clamp(beat.bpm + 1, 50, 180); } },
+    { label: '+10', w: 56, act: () => { beat.bpm = clamp(beat.bpm + 10, 50, 180); } },
+  ] });
+  rows.push({ title: '', items: [
+    { label: beat.playing ? 'Stop' : 'Play', w: 100, on: () => beat.playing, act: () => { beat.playing ? stopBeat() : startBeat(); } },
+    { gap: 24 },
+    { label: 'Done', w: 100, act: () => { closeMenu(); } },
+  ] });
+}
+
+$('beatBtn').addEventListener('click', () => togglePanel('beat', $('beatBtn')));
+// With a keyboard: the space bar starts and stops the beat
+addEventListener('keydown', e => {
+  if (e.code !== 'Space' || !started || e.target.tagName === 'INPUT') return;
+  e.preventDefault();
+  beat.playing ? stopBeat() : startBeat();
+});
+
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { pad: () => ({ pad, padState }), updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { beat, BEATS, startBeat, stopBeat, currentStep, pad: () => ({ pad, padState }), updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>

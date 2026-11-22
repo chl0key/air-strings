@@ -16,8 +16,8 @@ His repo has no license, so this matches what it does, in my own code, name and 
 
 ## Next step
 
-Test Stage 10: hold a note with one hand, pinch empty air with the other and drag down, up and sideways.
-Then Stage 11: beats, six patterns switched on one part at a time, on a steady clock.
+Test Stage 11: press Beat, switch on the parts one at a time, try each pattern, play along on a string.
+Then Stage 12: the looper, follow chords, snap to the grid.
 
 ## Stages
 
@@ -33,11 +33,16 @@ Then Stage 11: beats, six patterns switched on one part at a time, on a steady c
 | 8 | All 24 instruments, drums included, chosen from the string menu | [stage-8.md](lessons/stage-8.md) |
 | 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | [stage-9.md](lessons/stage-9.md) |
 | 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | [stage-10.md](lessons/stage-10.md) |
-| 11 | Beats: 6 patterns, one part at a time, on a steady clock | - |
+| 11 | Beats: 6 patterns, one part at a time, on a steady clock | [stage-11.md](lessons/stage-11.md) |
 | 12 | Looper layers, snap to the grid, "follow chords" | - |
 | 13 | Recording: video or sound, MP4/WebM, MP3, WAV, stems | - |
 | 14 | Saved setups and ready-made layouts | - |
 | 15+ | My additions | - |
+
+## Later
+
+- **Air pad: latch it.** Drag to set the sound, let go, and it stays while you play with both hands. Pinch the pad's dot to turn it off
+- **Air pad: make it visible.** Dim the screen when the sound goes darker, give strings trails when there's echo
 
 ## Notes
 
