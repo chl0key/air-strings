@@ -16,8 +16,8 @@ His repo has no license, so this matches what it does, in my own code, name and 
 
 ## Next step
 
-Test Stage 8: try one instrument from each row of the string menu, and sweep along a drum string.
-Then Stage 9: hold to sustain or roll, pinch-and-pull to bend the pitch.
+Test Stage 9: rest a fingertip on a violin string and a drum string, then pinch a guitar string and pull.
+Then Stage 10: the air pad, one-hand pinch and drag for filter and echo.
 
 ## Stages
 
@@ -31,7 +31,7 @@ Then Stage 9: hold to sustain or roll, pinch-and-pull to bend the pitch.
 | 6 | Real string sound (Karplus-Strong) and reverb | [stage-6.md](lessons/stage-6.md) |
 | 7 | The string menu: scale, key, notes or chords, octave, by pinching or hovering | [stage-7.md](lessons/stage-7.md) |
 | 8 | All 24 instruments, drums included, chosen from the string menu | [stage-8.md](lessons/stage-8.md) |
-| 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | - |
+| 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | [stage-9.md](lessons/stage-9.md) |
 | 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | - |
 | 11 | Beats: 6 patterns, one part at a time, on a steady clock | - |
 | 12 | Looper layers, snap to the grid, "follow chords" | - |

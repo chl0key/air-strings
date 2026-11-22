@@ -103,7 +103,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 8: 24 instruments, drums included. Hold your fingertip on a string's middle dot to open its menu, then pick an instrument. On a drum string, every zone is a different drum.</p>
+  <p>Stage 9: rest a fingertip on a string to hold the note: violins and voices sustain, drums and marimbas roll. Pinch a string and pull it sideways to bend the pitch, then let go to snap it.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -129,10 +129,15 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 8: 24 instruments
+//  AIR STRINGS · Stage 9: hold, roll, bend and snap
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • Rest a fingertip on a string: held instruments sustain, drums and mallets roll (section 23)
+//    • Pinch a string and pull sideways to bend the pitch; let go to snap it (section 24)
+//    • Every note is now a "voice" that can be held, bent and released (section 12c)
+//
+//  From Stage 8:
 //    • 24 instruments, all built from scratch with no recordings (sections 12b-12c)
 //    • Two drum kits, one drum per zone along a string (section 12d)
 //    • An Instrument section in the string menu, and each string shows its instrument
@@ -214,6 +219,16 @@ const settings = {
   buttonPad: 10,       // pixels: extra catch area around top-bar buttons, for hands
   holdTime: 0.8,       // seconds: hold a fingertip still on a button, menu option or middle dot to choose it
   stillMove: 70,       // pixels: a pinch on a dot or button that moves less than this counts as a click
+
+  // Holding and bending (Stage 9)
+  holdNear: 12,        // pixels: a fingertip this close to a string can start a hold...
+  holdAfter: 0.15,     // seconds: ...once it has rested there this long, moving slowly
+  holdSlow: 250,       // pixels per second: faster than this, the finger is passing, not resting
+  holdLeave: 26,       // pixels: a held finger that moves further away than this lets go
+  rollGap: 0.085,      // seconds between hits of a roll
+  bodyRadius: 18,      // pixels: how close a pinch must be to a string to grab it for a bend
+  bendMax: 200,        // cents (100 = a semitone): the furthest a pull can bend the pitch
+  bendPull: 140,       // pixels: pulling this far sideways gives the full bend
   pluckPause: 0.25,    // seconds after letting go of a pinch before that hand can pluck
 };
 
@@ -494,6 +509,8 @@ function targetAt(p, byHand) {
   if (peg) return { kind: 'peg', s: peg.s, end: peg.end };
   const s = nearestDot(p, settings.dotRadius);
   if (s) return { kind: 'dot', s };
+  const body = nearestBody(p, settings.bodyRadius);
+  if (body) return { kind: 'body', s: body.s, u: body.u };
   return null;
 }
 
@@ -502,13 +519,14 @@ function targetPos(tg) {
   if (tg.kind === 'item') return { x: tg.item.x + tg.item.w / 2, y: tg.item.y + tg.item.h / 2 };
   if (tg.kind === 'button') { const r = tg.el.getBoundingClientRect(); return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }; }
   if (tg.kind === 'peg') return tg.s[tg.end];
+  if (tg.kind === 'body') return { x: lerp(tg.s.a.x, tg.s.b.x, tg.u), y: lerp(tg.s.a.y, tg.s.b.y, tg.u) };
   return mid(tg.s.a, tg.s.b);
 }
 
 // A remembered target can go stale: the menu closed, or the string was deleted
 function stillThere(tg) {
   if (tg.kind === 'item') return menu.open && menu.items.includes(tg.item);
-  if (tg.kind === 'peg' || tg.kind === 'dot') return strings.includes(tg.s);
+  if (tg.kind === 'peg' || tg.kind === 'dot' || tg.kind === 'body') return strings.includes(tg.s);
   return true;
 }
 
@@ -528,6 +546,7 @@ function pinchStart(who, p, now, aimed) {
   if (tg.kind === 'button') grabs[who] = { job: 'press', el: tg.el, from: { ...p } };   // pressed when the pinch lets go
   if (tg.kind === 'peg')    grabs[who] = { job: 'drag', s: tg.s, end: tg.end };
   if (tg.kind === 'dot')    grabs[who] = { job: 'dot', s: tg.s, from: { ...p }, t: now };  // menu opens when the pinch lets go
+  if (tg.kind === 'body')   grabs[who] = { job: 'bend', s: tg.s, u: tg.u, ...startBend(tg.s, tg.u) };
 }
 
 // Runs every frame: move whatever each pinch is holding
@@ -536,6 +555,7 @@ function updateGrabs(now) {
     const g = grabs[who], p = pointOf(who);
     if (!p) continue;
     if (g.job === 'drag') g.s[g.end] = { ...p };
+    if (g.job === 'bend') moveBend(g, p);
   }
 
   // Both hands pinching free air: they're stretching a new string
@@ -586,6 +606,7 @@ function pinchEnd(who, now, lost) {
   if (g.job === 'drag' && strings.includes(g.s)) {
     if (dist(g.s.a, g.s.b) < settings.deleteBelow) removeString(g.s);
   }
+  if (g.job === 'bend') endBend(g);
 
   // A dot or a button only counts if the pinch stayed put: a quick, still
   // pinch-and-release, like a click
@@ -606,6 +627,7 @@ function addString(a, b) {
     a: { ...a }, b: { ...b }, born: seconds(), wobble: 0, wobbleAt: 0, wobbleU: 0.5, plucks: 0, mem: {},
     // Each string's own music settings. A new string starts with the top bar's.
     key: music.key, scale: music.scale, mode: music.mode, oct: 0, inst: 'guitar',
+    holds: {}, dwell: {}, pull: null,   // Stage 9: fingers resting on it, and a pinch pulling it
   };
   strings.push(s);
   bursts.push({ ...mid(a, b), t: performance.now(), color: COLORS.bone });
@@ -617,6 +639,7 @@ function removeString(s) {
   if (i < 0) return;
   strings.splice(i, 1);
   if (menu.s === s) closeMenu();
+  for (const id in s.holds) endHold(s, id);
   bursts.push({ ...mid(s.a, s.b), t: performance.now(), color: COLORS.hands[1] });
 }
 
@@ -810,31 +833,33 @@ function addPluck(out, pitch, P, sr) {
 // shift:   octaves up or down from the string's notes, to suit the instrument
 // level:   volume trim, so every instrument sounds about as loud as the others
 // room:    how much reverb
+// hold:    what a fingertip resting on the string does (Stage 9):
+//          'sustain' keeps the note sounding, 'roll' repeats it fast, none rings out once
 const INSTRUMENTS = {
   guitar:    { name: 'Guitar',          family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.28 },
   egtr:      { name: 'Electric guitar', family: 0, sound: 'pluck', shift: 0,  level: 0.45, room: 0.22, drive: true },
   harp:      { name: 'Harp',            family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.45 },
-  oud:       { name: 'Oud',             family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.25 },
-  qanun:     { name: 'Qanun',           family: 0, sound: 'pluck', shift: 1,  level: 1.3,  room: 0.3 },
+  oud:       { name: 'Oud',             family: 0, sound: 'pluck', shift: 0,  level: 1.0,  room: 0.25, hold: 'roll' },
+  qanun:     { name: 'Qanun',           family: 0, sound: 'pluck', shift: 1,  level: 1.3,  room: 0.3, hold: 'roll' },
   sitar:     { name: 'Sitar',           family: 0, sound: 'pluck', shift: 0,  level: 0.9,  room: 0.35 },
   piano:     { name: 'Piano',           family: 1, sound: 'piano',    shift: 1,  level: 0.7,  room: 0.3 },
   epiano:    { name: 'Electric piano',  family: 1, sound: 'epiano',   shift: 1,  level: 0.75,  room: 0.25 },
-  organ:     { name: 'Organ',           family: 1, sound: 'organ',    shift: 1,  level: 1.3,  room: 0.35 },
-  marimba:   { name: 'Marimba',         family: 1, sound: 'marimba',  shift: 1,  level: 0.85,  room: 0.3 },
+  organ:     { name: 'Organ',           family: 1, sound: 'organ',    shift: 1,  level: 1.3,  room: 0.35, hold: 'sustain' },
+  marimba:   { name: 'Marimba',         family: 1, sound: 'marimba',  shift: 1,  level: 0.85,  room: 0.3, hold: 'roll' },
   kalimba:   { name: 'Kalimba',         family: 1, sound: 'kalimba',  shift: 1,  level: 0.8,  room: 0.35 },
-  steelpan:  { name: 'Steel pan',       family: 1, sound: 'steelpan', shift: 1,  level: 0.8,  room: 0.3 },
-  violin:    { name: 'Violin',          family: 2, sound: 'bowed',    shift: 1,  level: 0.7,  room: 0.4, bright: 3800 },
-  cello:     { name: 'Cello',           family: 2, sound: 'bowed',    shift: -1, level: 0.7,  room: 0.4, bright: 1800 },
-  strings:   { name: 'Strings',         family: 2, sound: 'ensemble', shift: 0,  level: 0.8,  room: 0.5 },
-  flute:     { name: 'Flute',           family: 2, sound: 'flute',    shift: 1,  level: 0.45,  room: 0.4 },
-  trumpet:   { name: 'Trumpet',         family: 2, sound: 'brass',    shift: 1,  level: 0.75,  room: 0.3 },
-  voices:    { name: 'Voices',          family: 2, sound: 'voices',   shift: 0,  level: 1.4,  room: 0.5 },
+  steelpan:  { name: 'Steel pan',       family: 1, sound: 'steelpan', shift: 1,  level: 0.8,  room: 0.3, hold: 'roll' },
+  violin:    { name: 'Violin',          family: 2, sound: 'bowed',    shift: 1,  level: 0.7,  room: 0.4, bright: 3800, hold: 'sustain' },
+  cello:     { name: 'Cello',           family: 2, sound: 'bowed',    shift: -1, level: 0.7,  room: 0.4, bright: 1800, hold: 'sustain' },
+  strings:   { name: 'Strings',         family: 2, sound: 'ensemble', shift: 0,  level: 0.8,  room: 0.5, hold: 'sustain' },
+  flute:     { name: 'Flute',           family: 2, sound: 'flute',    shift: 1,  level: 0.45,  room: 0.4, hold: 'sustain' },
+  trumpet:   { name: 'Trumpet',         family: 2, sound: 'brass',    shift: 1,  level: 0.75,  room: 0.3, hold: 'sustain' },
+  voices:    { name: 'Voices',          family: 2, sound: 'voices',   shift: 0,  level: 1.4,  room: 0.5, hold: 'sustain' },
   bells:     { name: 'Bells',           family: 3, sound: 'bells',    shift: 1,  level: 0.5,  room: 0.45 },
-  synth:     { name: 'Synth',           family: 3, sound: 'synth',    shift: 0,  level: 0.55,  room: 0.25 },
+  synth:     { name: 'Synth',           family: 3, sound: 'synth',    shift: 0,  level: 0.55,  room: 0.25, hold: 'sustain' },
   bass:      { name: 'Bass',            family: 3, sound: 'pluck',    shift: -1, level: 1.0,  room: 0.1 },
   bass808:   { name: '808 bass',        family: 3, sound: 'sub',      shift: -1, level: 0.7,  room: 0.05 },
-  drums:     { name: 'Drums',           family: 3, sound: 'drums',    shift: 0,  level: 1.0,  room: 0.15 },
-  handdrums: { name: 'Hand drums',      family: 3, sound: 'handdrums',shift: 0,  level: 1.0,  room: 0.2 },
+  drums:     { name: 'Drums',           family: 3, sound: 'drums',    shift: 0,  level: 1.0,  room: 0.15, hold: 'roll' },
+  handdrums: { name: 'Hand drums',      family: 3, sound: 'handdrums',shift: 0,  level: 1.0,  room: 0.2, hold: 'roll' },
 };
 const INSTRUMENT_ORDER = Object.keys(INSTRUMENTS);
 
@@ -882,6 +907,9 @@ function env(param, t, points, curve = 'exp') {
     else param.linearRampToValueAtTime(v, t + dt);
   }
 }
+// While a note is being built, every sound source it makes is collected
+// here, so the note can later be bent (all sources together) or stopped.
+let collecting = null;
 function osc(type, freq, t, dur, out) {
   const o = audio.createOscillator();
   o.type = type;
@@ -889,6 +917,7 @@ function osc(type, freq, t, dur, out) {
   o.connect(out);
   o.start(t);
   o.stop(t + dur + 0.1);
+  if (collecting) collecting.push(o);
   return o;
 }
 function gainNode(value, out) {
@@ -918,6 +947,7 @@ function noise(t, dur, out) {
   src.connect(out);
   src.start(t, Math.random() * 1.5);
   src.stop(t + dur + 0.1);
+  if (collecting) collecting.push(src);
   return src;
 }
 // Several sine waves at multiples of the pitch, each with its own level and fade
@@ -940,6 +970,7 @@ function vibrato(oscs, t, dur, rate, cents, delay) {
   for (const o of oscs) depth.connect(o.detune);
   lfo.start(t);
   lfo.stop(t + dur + 0.1);
+  if (collecting) { lfo.noBend = true; collecting.push(lfo); }   // stopped with the note, never bent
 }
 // A volume shape for sustained notes: rise, hold, fall
 function swell(out, t, attack, hold, release, level = 1) {
@@ -949,14 +980,25 @@ function swell(out, t, attack, hold, release, level = 1) {
 }
 
 // Play one note. loudness 0-1, t = audio clock time.
-function playNote(id, midi, loudness, t) {
-  if (!audio) return;
+// held: a sustaining instrument keeps sounding until voice.release() is called.
+// Returns a "voice": a handle for bending or releasing the note later.
+function playNote(id, midi, loudness, t, held = false) {
+  if (!audio) return null;
+  collecting = [];
+  try { return buildNote(id, midi, loudness, t, held); }
+  finally { collecting = null; }
+}
+
+function buildNote(id, midi, loudness, t, held) {
   t = Math.max(t || 0, audio.currentTime);
   const I = INSTRUMENTS[id];
   midi += 12 * I.shift;
   const f = midiToPitch(midi);
-  const out = gainNode(0.25 + 0.75 * loudness, busFor(id));
-  const L = NOTE_HOLD;
+  // The gate: one volume knob for the whole note, so releasing it is one move
+  const gate = gainNode(1, busFor(id));
+  const out = gainNode(0.25 + 0.75 * loudness, gate);
+  const L = held ? 60 : NOTE_HOLD;     // a held note's envelopes run long; release() ends it
+  const voice = makeVoice(gate, collecting);
 
   switch (I.sound) {
     case 'pluck': {
@@ -965,6 +1007,7 @@ function playNote(id, midi, loudness, t) {
       // Soft plucks sound darker, hard plucks brighter
       src.connect(filterNode('lowpass', 1200 + 7000 * loudness * loudness, 0.7, out));
       src.start(t);
+      collecting.push(src);
       break;
     }
     case 'piano': {
@@ -1102,6 +1145,32 @@ function playNote(id, midi, loudness, t) {
       break;
     }
   }
+  return voice;
+}
+
+// A voice: everything needed to bend or end one note
+function makeVoice(gate, sources) {
+  return {
+    sources,
+    // Bend every source's pitch by "cents" (100 cents = 1 semitone), gliding over "glide" seconds
+    bend(cents, glide = 0.03) {
+      const t = audio.currentTime;
+      for (const src of sources) {
+        if (!src.detune || src.noBend) continue;
+        if (src.baseDetune === undefined) src.baseDetune = src.detune.value;
+        src.detune.cancelScheduledValues(t);
+        src.detune.setTargetAtTime(src.baseDetune + cents, t, glide);
+      }
+    },
+    // Fade the note out over "fade" seconds, then stop everything in it
+    release(fade = 0.2) {
+      const t = audio.currentTime;
+      gate.gain.cancelScheduledValues(t);
+      gate.gain.setValueAtTime(gate.gain.value, t);
+      gate.gain.setTargetAtTime(0, t, fade / 3);
+      for (const src of sources) { try { src.stop(t + fade + 0.1); } catch (e) { /* already stopped */ } }
+    },
+  };
 }
 
 // ── 12d. Drums ───────────────────────────────────────────────
@@ -1181,6 +1250,14 @@ function checkPluck(id, p, now) {
     let mem = s.mem[id];
     if (!mem || now - mem.seen > FORGET_AFTER) mem = s.mem[id] = { side: 0, at: { ...p }, atTime: now, seen: now, last: 0 };
     mem.seen = now;
+
+    // A finger holding this string: keep the hold going, and don't pluck
+    if (checkHold(s, id, p, d, mem, now)) {
+      if (Math.abs(d) >= DEAD_BAND) mem.side = Math.sign(d);
+      mem.at = { ...p }; mem.atTime = now;
+      continue;
+    }
+
     if (Math.abs(d) < DEAD_BAND) continue;
     const side = Math.sign(d);
 
@@ -1259,6 +1336,7 @@ function loop() {
   updateButtonHover(now);
   updateDotHold(now);
   plucking(now);
+  updateHolds(now);
   draw();
   updatePanel();
 
@@ -1309,18 +1387,35 @@ function drawString(s) {
   ctx.lineCap = 'round';
   ctx.beginPath();
   const STEPS = 40;
+  // A pulled string bends into a tent with its peak at the pinch.
+  // A held string trembles a little for as long as it's held.
+  const pull = s.pull ? s.pull.d : 0, pullU = s.pull ? s.pull.u : 0.5;
+  const shiver = Object.keys(s.holds).length ? 2.5 * Math.sin(performance.now() / 18) : 0;
   for (let i = 0; i <= STEPS; i++) {
     const u = i / STEPS;
     const w = u < s.wobbleU ? u / s.wobbleU : (1 - u) / (1 - s.wobbleU);   // tent shape
-    const x = lerp(a.x, b.x, u) + nx * amp * w;
-    const y = lerp(a.y, b.y, u) + ny * amp * w;
+    const wp = u < pullU ? u / pullU : (1 - u) / (1 - pullU);
+    const off = amp * w + pull * wp + shiver * Math.sin(Math.PI * u);
+    const x = lerp(a.x, b.x, u) + nx * off;
+    const y = lerp(a.y, b.y, u) + ny * off;
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   }
   ctx.stroke();
 
+  // Where a finger is holding the string: a soft glow
+  for (const h of Object.values(s.holds)) {
+    const q = { x: lerp(a.x, b.x, h.u), y: lerp(a.y, b.y, h.u) };
+    ctx.fillStyle = COLORS.hands[0];
+    ctx.globalAlpha = 0.35 + 0.15 * Math.sin(performance.now() / 90);
+    ctx.beginPath();
+    ctx.arc(q.x, q.y, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   // Zone marks: a small tick across the string between each pair of notes.
-  // The zone just plucked glows for a moment.
-  if (!doomed) {
+  // The zone just plucked glows for a moment. (Hidden while the string is pulled into a bend.)
+  if (!doomed && !s.pull) {
     const n = zoneCount(s), low = lowEnd(s);
     const P = k => {   // point k of the way from the low end (0) to the high end (1)
       const u = low === 'a' ? k : 1 - k;
@@ -1351,7 +1446,7 @@ function drawString(s) {
   }
 
   // The middle dot: pinch it and let go to open this string's menu
-  if (!doomed) {
+  if (!doomed && !s.pull) {
     const m = mid(a, b);
     ctx.fillStyle = COLORS.room;
     ctx.strokeStyle = menu.s === s ? COLORS.hands[0] : COLORS.dust;
@@ -1473,7 +1568,7 @@ function drawHand(h, i) {
 function drawAim(p, color, closed, flash = 0) {
   // Show what a pinch here would grab: a peg first, then a string's middle dot
   const tg = !closed && !menu.open && targetAt(p, false);
-  const target = !tg ? null : tg.kind === 'peg' ? tg.s[tg.end] : tg.kind === 'dot' ? mid(tg.s.a, tg.s.b) : null;
+  const target = !tg || tg.kind === 'button' ? null : targetPos(tg);
   if (target) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
@@ -1997,8 +2092,151 @@ function dotHoldProgress(s) {
   return best;
 }
 
+// ── 23. Holding a note ───────────────────────────────────────
+// How does the app tell a resting finger from a sweeping one? Speed and
+// time. A fingertip that stays within holdNear pixels of a string, moving
+// slower than holdSlow, for holdAfter seconds, is resting on it. A sweep
+// crosses the string far faster than that, so it plucks instead.
+//
+// What a hold does depends on the instrument (its "hold" in INSTRUMENTS):
+//   'sustain' (violin, organ, voices...): the note keeps sounding until you lift off
+//   'roll' (drums, marimba, oud...): fast repeated hits, like a drumroll or tremolo
+//   none (guitar, piano, bells...): nothing extra, the pluck rings out on its own
+// Slide a held finger along the string and the note follows it.
+// The middle dot is left out: resting there opens the menu instead.
+
+// Called from checkPluck for every pointer and string. Returns true while
+// this pointer is holding this string, so it doesn't pluck it too.
+function checkHold(s, id, p, d, mem, now) {
+  const u = alongOf(s, p);
+  const H = s.holds[id];
+  if (H) {
+    if (Math.abs(d) > settings.holdLeave || u < 0.02 || u > 0.98) { endHold(s, id); return false; }
+    H.seen = now;
+    H.u = clamp(u, 0, 0.999);
+    const z = zoneAt(s, H.u);
+    if (z !== H.z) moveHold(s, H, z);
+    return true;
+  }
+
+  const style = INSTRUMENTS[s.inst].hold;
+  if (!style || s.pull) return false;
+  const speed = dist(p, mem.at) / Math.max(now - mem.atTime, 0.008);
+  const resting = Math.abs(d) < settings.holdNear && u > 0.06 && u < 0.94
+    && dist(p, mid(s.a, s.b)) > settings.dotRadius + 4
+    && speed < settings.holdSlow && now - s.born > NEW_STRING_QUIET;
+  if (!resting) { delete s.dwell[id]; return false; }
+
+  const dw = s.dwell[id];
+  if (!dw || now - dw.last > 0.2) { s.dwell[id] = { since: now, last: now }; return false; }
+  dw.last = now;
+  if (now - dw.since < settings.holdAfter) return false;
+  delete s.dwell[id];
+  startHold(s, id, clamp(u, 0, 0.999), now);
+  return true;
+}
+
+function startHold(s, id, u, now) {
+  const H = s.holds[id] = { u, z: zoneAt(s, u), seen: now, voices: [], nextRoll: now };
+  moveHold(s, H, H.z, true);
+}
+
+// Start (or switch to) the note for zone z
+function moveHold(s, H, z, first) {
+  H.z = z;
+  const style = INSTRUMENTS[s.inst].hold;
+  const info = zoneNotes(s, z);
+  if (style === 'sustain') {
+    for (const v of H.voices) v && v.release(0.12);
+    H.voices = info.notes.map(m => playNote(s.inst, m, 0.6, 0, true));
+  } else if (first) H.nextRoll = 0;     // a roll's first hit lands straight away
+  s.flashZone = z;
+  s.wobbleAt = performance.now();
+  s.wobble = 4;
+  const at = { x: lerp(s.a.x, s.b.x, H.u), y: lerp(s.a.y, s.b.y, H.u) };
+  pops.push({ ...at, text: info.label, t: performance.now() });
+}
+
+function endHold(s, id) {
+  const H = s.holds[id];
+  if (!H) return;
+  for (const v of H.voices) v && v.release(INSTRUMENTS[s.inst].sound === 'ensemble' ? 0.5 : 0.25);
+  delete s.holds[id];
+}
+
+// Runs every frame: play the next hit of each roll, and end holds whose finger has gone
+function updateHolds(now) {
+  for (const s of strings) {
+    for (const id of Object.keys(s.holds)) {
+      const H = s.holds[id];
+      if (now - H.seen > 0.12 || menu.open) { endHold(s, id); continue; }
+      if (INSTRUMENTS[s.inst].hold !== 'roll' || now < H.nextRoll) continue;
+      // A roll: each hit a little softer or louder than the last, like real hands
+      const info = zoneNotes(s, H.z), vel = 0.35 + 0.25 * Math.random();
+      if (info.drum) playDrum(s.inst, info.drum, vel, 0);
+      else info.notes.forEach(m => playNote(s.inst, m, vel * (info.notes.length > 1 ? 0.6 : 1), 0));
+      s.wobble = 3 + 4 * vel;
+      s.wobbleAt = performance.now();
+      s.wobbleU = clamp(H.u, 0.1, 0.9);
+      H.nextRoll = Math.max(H.nextRoll + settings.rollGap, now + settings.rollGap * 0.5);
+    }
+  }
+}
+
+// ── 24. Bend and snap ────────────────────────────────────────
+// Pinch a string anywhere along it (away from the pegs and the middle dot)
+// and pull sideways. The string bends toward your hand and the note rises,
+// up to bendMax cents at bendPull pixels. Let go and it snaps back with a
+// twang: the further you pulled, the louder.
+//
+// A bend changes the "detune" of every sound source in the note at once.
+// Detune is in cents, so +100 raises the note by exactly one semitone.
+
+function nearestBody(p, radius) {
+  let best = null, bd = radius;
+  for (const s of strings) {
+    const u = alongOf(s, p), d = Math.abs(sideOf(s, p));
+    if (u < 0.08 || u > 0.92 || d >= bd) continue;
+    if (dist(p, mid(s.a, s.b)) < settings.dotRadius) continue;   // that's the dot
+    bd = d; best = { s, u };
+  }
+  return best;
+}
+
+function startBend(s, u) {
+  for (const id in s.holds) endHold(s, id);
+  const info = zoneNotes(s, zoneAt(s, u));
+  s.pull = { u, d: 0 };
+  if (info.drum) return { voices: [] };
+  const held = INSTRUMENTS[s.inst].hold === 'sustain';
+  const voices = info.notes.map(m => playNote(s.inst, m, 0.5, 0, held));
+  pops.push({ x: lerp(s.a.x, s.b.x, u), y: lerp(s.a.y, s.b.y, u), text: info.label, t: performance.now() });
+  return { voices };
+}
+
+function moveBend(g, p) {
+  if (!strings.includes(g.s)) return;
+  const d = clamp(sideOf(g.s, p), -settings.bendPull, settings.bendPull);
+  g.s.pull = { u: g.u, d };
+  const cents = settings.bendMax * Math.abs(d) / settings.bendPull;
+  for (const v of g.voices) v && v.bend(cents);
+}
+
+function endBend(g) {
+  const s = g.s, pulled = s.pull ? Math.abs(s.pull.d) : 0, side = s.pull && s.pull.d < 0 ? -1 : 1;
+  s.pull = null;
+  for (const v of g.voices) {
+    if (!v) continue;
+    v.bend(0, 0.012);                                         // snap back to pitch
+    if (INSTRUMENTS[s.inst].hold === 'sustain') v.release(0.3);
+  }
+  if (!strings.includes(s)) return;
+  // The twang: a fresh pluck where you let go, louder the further you pulled
+  if (pulled > 20) pluck(s, g.u, clamp(0.3 + 0.7 * pulled / settings.bendPull, 0.3, 1), side);
+}
+
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>
