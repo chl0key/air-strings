@@ -174,3 +174,42 @@
 - Every earlier test still passes
 
 **Settings:** `aimMemory`, `aimReach`, `buttonPad`, `buttonDwell` and `stillMove` in section 3
+
+## Fix after testing: panels and the 0.8-second hold everywhere
+
+**What you asked for**
+- Top-right buttons with more than two choices should open a panel
+- The middle dot should open with the same 0.8-second hold as the buttons
+
+**What changed**
+- **Key** and **Scale** open a panel under their button (`openPanel`, section 20)
+  - Choose by holding your fingertip on an option, pinching it, or clicking
+  - Choosing sets every string and closes the panel
+  - Press the button again to close its panel without choosing
+- **Notes/Chords** has two choices, so it still switches with one press
+- **Middle dot:** hold your fingertip on it for 0.8 seconds (`updateDotHold`, section 22)
+  - A ring fills around the dot, then the menu opens
+  - A finger sweeping across to play passes far too fast to trigger it
+- **One hold time everywhere:** buttons, menu options and dots all use `holdTime: 0.8` in section 3
+  - Menu options used to take 0.7 seconds
+- **No pop-back:** if a menu or panel closes while your fingertip is still resting on its button or dot, it stays closed
+  - A hold only resets once your fingertip moves off
+
+**How the menu code changed**
+- One menu system now serves two kinds of menu:
+  - `kind: 'string'` sits beside a string and changes only that string
+  - `kind: 'key'` or `'scale'` sits under a top-bar button and changes every string
+- `menu.open` says whether any menu is showing
+- `layoutMenu` builds the rows for the kind
+- `placeMenu` puts it in the right spot
+
+**Tested**
+- Mouse: **Key** opens its panel, and choosing **A** sets both strings to A and closes the panel
+  - Pressing **Scale** twice opens and closes its panel
+- Hand: a fingertip on the dot does nothing at 0.5 s, and opens the menu at 0.9 s
+  - Holding **Hijaz** chooses it at 0.9 s, for that string only
+- Hand: holding **Key** opens the panel, and holding **E♭** sets every string and closes it
+- A finger sweeping across the dot plucks once and opens nothing
+- A panel or menu that closes under a resting fingertip doesn't reopen
+  - Moving off and back opens it again
+- Every earlier test still passes

@@ -112,8 +112,8 @@
 </section>
 
 <div id="bar" class="hidden">
-  <button id="keyBtn" title="Click for the next key, Shift-click for the previous one"></button>
-  <button id="scaleBtn" title="Click for the next scale, Shift-click for the previous one"></button>
+  <button id="keyBtn" title="Choose the key for every string"></button>
+  <button id="scaleBtn" title="Choose the scale for every string"></button>
   <button id="modeBtn" title="Single notes or chords"></button>
   <button id="clear">Clear strings</button>
 </div>
@@ -207,7 +207,7 @@ const settings = {
   aimMemory: 0.5,      // seconds: a pinch goes to what the fingertip pointed at this recently...
   aimReach: 90,        // pixels: ...as long as the pinch lands within this distance of it
   buttonPad: 10,       // pixels: extra catch area around top-bar buttons, for hands
-  buttonDwell: 0.8,    // seconds: hold a fingertip on a top-bar button to press it
+  holdTime: 0.8,       // seconds: hold a fingertip still on a button, menu option or middle dot to choose it
   stillMove: 70,       // pixels: a pinch on a dot or button that moves less than this counts as a click
   pluckPause: 0.25,    // seconds after letting go of a pinch before that hand can pluck
 };
@@ -481,7 +481,7 @@ function pointOf(who) {
 //   3. a peg
 //   4. a string's middle dot
 function targetAt(p, byHand) {
-  if (menu.s) { const item = menuItemAt(p); return item && { kind: 'item', item }; }
+  if (menu.open) { const item = menuItemAt(p); return item && { kind: 'item', item }; }
   const el = byHand && buttonAt(p);
   if (el) return { kind: 'button', el };
   const peg = nearestPeg(p, settings.grabRadius);
@@ -501,7 +501,7 @@ function targetPos(tg) {
 
 // A remembered target can go stale: the menu closed, or the string was deleted
 function stillThere(tg) {
-  if (tg.kind === 'item') return !!menu.s && menu.items.includes(tg.item);
+  if (tg.kind === 'item') return menu.open && menu.items.includes(tg.item);
   if (tg.kind === 'peg' || tg.kind === 'dot') return strings.includes(tg.s);
   return true;
 }
@@ -512,7 +512,7 @@ function pinchStart(who, p, now, aimed) {
   if (!tg && aimed && now - aimed.t < settings.aimMemory && stillThere(aimed.tg)
       && dist(p, targetPos(aimed.tg)) < settings.aimReach) tg = aimed.tg;
 
-  if (menu.s) {                       // a menu is open: choose from it, or close it if the pinch missed
+  if (menu.open) {                    // a menu is open: choose from it, or close it if the pinch missed
     if (tg && tg.kind === 'item') chooseItem(tg.item);
     else closeMenu();
     grabs[who] = { job: 'used' };
@@ -858,7 +858,7 @@ function pluck(s, u, loudness, fromSide = 1) {
 //     clearly open (not halfway into a pinch), and didn't just let go of one
 //   • the mouse, while no button is pressed
 function plucking(now) {
-  if (menu.s) return;    // a menu is open: hands are choosing, not playing
+  if (menu.open) return;    // a menu is open: hands are choosing, not playing
   slots.forEach((h, j) => {
     if (!h || h.pinched || grabs['hand' + j]) return;
     if (h.ratio < settings.openAt || now - h.released < settings.pluckPause) return;
@@ -885,6 +885,7 @@ function loop() {
   updateGrabs(now);
   updateMenu(now);
   updateButtonHover(now);
+  updateDotHold(now);
   plucking(now);
   draw();
   updatePanel();
@@ -987,6 +988,16 @@ function drawString(s) {
     ctx.arc(m.x, m.y, 8, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+
+    // A fingertip is holding the dot: a ring fills around it
+    const k = dotHoldProgress(s);
+    if (k !== null) {
+      ctx.strokeStyle = COLORS.hands[0];
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 18, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   // Pegs: the low end is a filled dot, the high end a ring, so you can tell them apart
@@ -1069,7 +1080,7 @@ function drawHand(h, i) {
 
   // Holding on a top-bar button: a ring fills around the fingertip, then it's pressed
   if (h.btnDwell && !h.btnDwell.done) {
-    const k = clamp((seconds() - h.btnDwell.since) / settings.buttonDwell, 0, 1);
+    const k = clamp((seconds() - h.btnDwell.since) / settings.holdTime, 0, 1);
     ctx.strokeStyle = color;
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -1082,7 +1093,7 @@ function drawHand(h, i) {
 // see what a pinch would grab before you close it.
 function drawAim(p, color, closed, flash = 0) {
   // Show what a pinch here would grab: a peg first, then a string's middle dot
-  const tg = !closed && !menu.s && targetAt(p, false);
+  const tg = !closed && !menu.open && targetAt(p, false);
   const target = !tg ? null : tg.kind === 'peg' ? tg.s[tg.end] : tg.kind === 'dot' ? mid(tg.s.a, tg.s.b) : null;
   if (target) {
     ctx.strokeStyle = color;
@@ -1268,11 +1279,14 @@ function showMusic() {
   $('scaleBtn').textContent = SCALES[music.scale].name;
   $('modeBtn').textContent = music.mode === 'notes' ? 'Single notes' : 'Chords';
 }
-$('keyBtn').addEventListener('click', e => setAll('key', (music.key + (e.shiftKey ? 11 : 1)) % 12));
-$('scaleBtn').addEventListener('click', e => {
-  const i = SCALE_ORDER.indexOf(music.scale) + (e.shiftKey ? -1 : 1);
-  setAll('scale', SCALE_ORDER[(i + SCALE_ORDER.length) % SCALE_ORDER.length]);
-});
+// Key and Scale have many choices, so they open a panel. Notes/Chords has
+// two, so it just switches. Pressing a button again closes its panel.
+function togglePanel(kind, btn) {
+  if (menu.open && menu.kind === kind) closeMenu();
+  else openPanel(kind, btn);
+}
+$('keyBtn').addEventListener('click', () => togglePanel('key', $('keyBtn')));
+$('scaleBtn').addEventListener('click', () => togglePanel('scale', $('scaleBtn')));
 $('modeBtn').addEventListener('click', () => setAll('mode', music.mode === 'notes' ? 'chords' : 'notes'));
 showMusic();
 
@@ -1286,9 +1300,9 @@ showMusic();
 //
 // A pinch outside the menu, or Done, closes it. So does leaving it alone
 // for IDLE_CLOSE seconds.
-const DWELL = 0.7;
 const IDLE_CLOSE = 10;
-const menu = { s: null, items: [], box: null, touched: null, hover: {} };
+// kind: 'string' (one string's menu), 'key' or 'scale' (a top-bar panel that sets every string)
+const menu = { open: false, kind: null, s: null, btn: null, items: [], box: null, touched: null, hover: {} };
 
 const SCALE_SHORT = { major: 'Major', minor: 'Minor', pentamaj: 'Maj pent', pentamin: 'Min pent', blues: 'Blues', dorian: 'Dorian', hijaz: 'Hijaz' };
 const OCTAVES = [[-1, 'Low'], [0, 'Middle'], [1, 'High']];
@@ -1303,17 +1317,32 @@ function nearestDot(p, radius) {
   return best;
 }
 
-function openMenu(s) {
-  menu.s = s;
-  menu.touched = null;     // set from the loop's clock on the next frame
-  menu.hover = {};
+function openMenu(s) { showMenu('string', s, null); }
+
+// A top-bar panel, opened under its button
+function openPanel(kind, btn) { showMenu(kind, null, btn); }
+
+function showMenu(kind, s, btn) {
+  Object.assign(menu, { open: true, kind, s, btn, hover: {}, touched: null });   // touched is set from the loop's clock next frame
   layoutMenu();
 }
-function closeMenu() { menu.s = null; menu.items = []; menu.hover = {}; }
+function closeMenu() { Object.assign(menu, { open: false, kind: null, s: null, btn: null, items: [], hover: {} }); }
 
-// Build the rows of options, then place the whole menu beside the string's middle
+// Build the rows of options, then place the whole menu: beside the string's
+// middle for a string menu, under the button for a top-bar panel
 function layoutMenu() {
   const s = menu.s, rows = [];
+  if (menu.kind === 'key') {
+    rows.push({ title: 'Key for every string', items: NOTE_NAMES.map((n, k) => ({ label: n, w: 48, on: () => music.key === k, act: () => setAll('key', k) })) });
+    rows.push({ title: '', items: [{ label: 'Done', w: 100, quiet: true, act: () => {} }] });
+  } else if (menu.kind === 'scale') {
+    rows.push({ title: 'Scale for every string', items: SCALE_ORDER.map(id => ({ label: SCALE_SHORT[id], w: 84, on: () => music.scale === id, act: () => setAll('scale', id) })) });
+    rows.push({ title: '', items: [{ label: 'Done', w: 100, quiet: true, act: () => {} }] });
+  } else buildStringRows(s, rows);
+  placeMenu(rows);
+}
+
+function buildStringRows(s, rows) {
   rows.push({ title: 'Scale', items: SCALE_ORDER.map(id => ({ label: SCALE_SHORT[id], w: 84, on: () => s.scale === id, act: () => { s.scale = id; } })) });
   rows.push({ title: 'Key', items: NOTE_NAMES.map((n, k) => ({ label: n, w: 48, on: () => s.key === k, act: () => { s.key = k; } })) });
   rows.push({ title: 'Play and octave', items: [
@@ -1327,17 +1356,27 @@ function layoutMenu() {
     { gap: 24 },
     { label: 'Done', w: 100, act: () => { closeMenu(); } },
   ] });
+}
 
+function placeMenu(rows) {
   const PAD = 16, GAP = 8, H = 40, TITLE = 22;
   const rowW = r => r.items.reduce((w, it) => w + (it.gap || it.w) + GAP, -GAP);
   const W = Math.max(...rows.map(rowW)) + PAD * 2;
   const Ht = PAD * 2 + rows.reduce((h, r) => h + (r.title ? TITLE : 0) + H + GAP * 1.5, 0);
 
-  // Above the string's middle if there's room, otherwise below. Always on screen.
-  const m = mid(s.a, s.b);
-  let x = clamp(m.x - W / 2, 16, Math.max(16, innerWidth - W - 16));
-  let y = m.y - Ht - 40;
-  if (y < 70) y = m.y + 40;
+  let x, y;
+  if (menu.kind === 'string') {
+    // Above the string's middle if there's room, otherwise below. Always on screen.
+    const m = mid(menu.s.a, menu.s.b);
+    x = clamp(m.x - W / 2, 16, Math.max(16, innerWidth - W - 16));
+    y = m.y - Ht - 40;
+    if (y < 70) y = m.y + 40;
+  } else {
+    // Under its button, lined up with the button's right edge
+    const r = menu.btn.getBoundingClientRect();
+    x = clamp(r.right - W, 16, Math.max(16, innerWidth - W - 16));
+    y = r.bottom + 12;
+  }
   y = clamp(y, 70, Math.max(70, innerHeight - Ht - 16));
   menu.box = { x, y, w: W, h: Ht };
 
@@ -1361,18 +1400,24 @@ function menuItemAt(p) {
 }
 
 function chooseItem(it) {
-  const s = menu.s;
+  const s = menu.s, kind = menu.kind;
   it.act();
   menu.touched = null;
   menu.hover = {};
-  // Play the string quietly so you hear the choice
-  if (menu.s && strings.includes(s)) pluck(s, 0.5, 0.35, 1);
+  if (kind === 'string') {
+    // A string menu stays open for more choices. Play the string quietly so you hear it.
+    if (menu.open && strings.includes(s)) pluck(s, 0.5, 0.35, 1);
+  } else {
+    // A top-bar panel is a single choice: close it, and play the first string as a preview
+    closeMenu();
+    if (strings[0] && !it.quiet) pluck(strings[0], 0.5, 0.35, 1);
+  }
 }
 
 // Runs every frame: hover rings, dwell choosing, and closing when idle
 function updateMenu(now) {
-  if (!menu.s) return;
-  if (!strings.includes(menu.s)) return closeMenu();
+  if (!menu.open) return;
+  if (menu.kind === 'string' && !strings.includes(menu.s)) return closeMenu();
   if (menu.touched === null) menu.touched = now;
   if (now - menu.touched > IDLE_CLOSE) return closeMenu();
 
@@ -1385,7 +1430,7 @@ function updateMenu(now) {
     menu.touched = now;
     if (!hv || hv.it !== it) { menu.hover[id] = { it, since: now }; return; }
     if (hv.done) return;                  // already chosen: move off it and back to choose again
-    if (now - hv.since >= DWELL) { hv.done = true; chooseItem(it); menu.hover[id] = { it, since: now, done: true }; }
+    if (now - hv.since >= settings.holdTime) { hv.done = true; chooseItem(it); menu.hover[id] = { it, since: now, done: true }; }
   });
   if (mouse.on) {
     const it = menuItemAt(mouse);
@@ -1395,19 +1440,21 @@ function updateMenu(now) {
 }
 
 function drawMenu() {
-  if (!menu.s) return;
+  if (!menu.open) return;
   const b = menu.box, now = seconds();
 
-  // A thin line from the menu to the string it belongs to
-  const m = mid(menu.s.a, menu.s.b);
-  ctx.strokeStyle = COLORS.hands[0];
-  ctx.globalAlpha = 0.5;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(m.x, m.y);
-  ctx.lineTo(clamp(m.x, b.x + 20, b.x + b.w - 20), m.y < b.y ? b.y : b.y + b.h);
-  ctx.stroke();
-  ctx.globalAlpha = 1;
+  // A string menu: a thin line from the menu to the string it belongs to
+  if (menu.kind === 'string') {
+    const m = mid(menu.s.a, menu.s.b);
+    ctx.strokeStyle = COLORS.hands[0];
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(m.x, m.y);
+    ctx.lineTo(clamp(m.x, b.x + 20, b.x + b.w - 20), m.y < b.y ? b.y : b.y + b.h);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
 
   ctx.fillStyle = COLORS.wall;
   roundRect(b.x, b.y, b.w, b.h, 14);
@@ -1436,7 +1483,7 @@ function drawMenu() {
 
     // The dwell ring: fills up while a hand holds still over an option
     if (hv && !hv.done) {
-      const k = clamp((now - hv.since) / DWELL, 0, 1);
+      const k = clamp((now - hv.since) / settings.holdTime, 0, 1);
       ctx.strokeStyle = COLORS.hands[0];
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -1456,7 +1503,7 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 
-addEventListener('resize', () => { if (menu.s) layoutMenu(); });
+addEventListener('resize', () => { if (menu.open) layoutMenu(); });
 
 // ── 21. Hands on the top-bar buttons ─────────────────────────
 // The canvas and the buttons share the same screen positions, so we can
@@ -1482,17 +1529,48 @@ function updateButtonHover(now) {
   const hovered = new Set();
   slots.forEach(h => {
     if (!h) return;
-    const b = !h.pinched && !menu.s && buttonAt(h.cursor);
+    // While a menu is open, buttons are paused, but a finished hold is kept,
+    // so a panel that closes under a resting fingertip doesn't pop back open.
+    // A hold only resets once the fingertip moves off the button.
+    if (menu.open) return;
+    const b = !h.pinched && buttonAt(h.cursor);
     if (!b) { h.btnDwell = null; return; }
     hovered.add(b);
     if (!h.btnDwell || h.btnDwell.el !== b) h.btnDwell = { el: b, since: now, done: false };
-    if (!h.btnDwell.done && now - h.btnDwell.since >= settings.buttonDwell) { h.btnDwell.done = true; b.click(); }
+    if (!h.btnDwell.done && now - h.btnDwell.since >= settings.holdTime) { h.btnDwell.done = true; b.click(); }
   });
   for (const b of document.querySelectorAll('#bar button')) b.classList.toggle('hand-hover', hovered.has(b));
 }
 
+// ── 22. Hold a fingertip on a middle dot to open its menu ────
+// The same hold as the buttons: keep your fingertip on a string's middle
+// dot for holdTime seconds, and a ring fills around the dot, then the menu
+// opens. A sweeping, playing finger passes over the dot far too quickly to
+// trigger it. Move off and back to open it again.
+function updateDotHold(now) {
+  slots.forEach((h, j) => {
+    if (!h || menu.open) return;    // paused while a menu is open, keeping a finished hold (see updateButtonHover)
+    const s = !h.pinched && !grabs['hand' + j] && nearestDot(h.cursor, settings.dotRadius);
+    if (!s) { h.dotHold = null; return; }
+    if (!h.dotHold || h.dotHold.s !== s) h.dotHold = { s, since: now, done: false };
+    if (!h.dotHold.done && now - h.dotHold.since >= settings.holdTime) { h.dotHold.done = true; openMenu(s); }
+  });
+}
+
+// How far along a hold on this string's dot is, from 0 to 1 (null if nobody is holding it)
+function dotHoldProgress(s) {
+  let best = null;
+  for (const h of slots) {
+    if (h && h.dotHold && h.dotHold.s === s && !h.dotHold.done) {
+      const k = clamp((seconds() - h.dotHold.since) / settings.holdTime, 0, 1);
+      best = Math.max(best || 0, k);
+    }
+  }
+  return best;
+}
+
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>
