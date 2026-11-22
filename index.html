@@ -57,7 +57,8 @@
   .hidden { display: none !important; }
 
   /* Top bar: the one button we need so far */
-  #bar { position: fixed; top: 16px; right: 16px; display: flex; gap: 8px; }
+  #bar { position: fixed; top: 16px; right: 16px; left: 16px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; pointer-events: none; }
+  #bar button { pointer-events: auto; }
   #bar button { font-size: 15px; padding: 9px 18px; background: color-mix(in srgb, var(--wall) 88%, transparent); color: var(--bone); }
 
   /* A short message that appears in the middle of the top edge, then fades */
@@ -100,7 +101,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 4: pinch with both hands and pull them apart to stretch a new string. Pinch a peg to move it. Push the two pegs together to delete a string. Sweep a fingertip across any string to play it.</p>
+  <p>Stage 5: every spot along a string plays its own note, low at the left end and high at the right. Longer strings hold more notes. Pick a key and a scale at the top, or switch strings to chords.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -108,7 +109,12 @@
   <div id="status"></div>
 </section>
 
-<div id="bar" class="hidden"><button id="clear">Clear strings</button></div>
+<div id="bar" class="hidden">
+  <button id="keyBtn" title="Click for the next key, Shift-click for the previous one"></button>
+  <button id="scaleBtn" title="Click for the next scale, Shift-click for the previous one"></button>
+  <button id="modeBtn" title="Single notes or chords"></button>
+  <button id="clear">Clear strings</button>
+</div>
 <div id="toast"></div>
 
 <div id="panel" class="hidden">
@@ -121,10 +127,16 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 4: a precise pinch, and strings you make
+//  AIR STRINGS · Stage 5: notes, scales and chords
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • Each string is split into zones, one note per zone (section 18)
+//    • Longer strings hold more notes
+//    • A key and a scale for everything, plus a chords mode (sections 18-19)
+//    • Chords are strummed, low to high or high to low, by sweep direction
+//
+//  From Stage 4:
 //    • Smoothing that adapts to speed: steady when you aim, quick when
 //      you swing (section 8)
 //    • A pinch knows what it's aimed at: a peg, or empty air (section 10)
@@ -506,12 +518,14 @@ function startAudio() {
   if (audio.state !== 'running') audio.resume();
 }
 
-function beep(loudness) {
+// One note. pitch = vibrations per second, loudness 0-1, when = audio clock time.
+// (Stage 6 swaps this beep for a real plucked-string sound.)
+function beep(pitch, loudness, when) {
   if (!audio) return;
-  const t = audio.currentTime;
+  const t = Math.max(when || 0, audio.currentTime);
   const osc = audio.createOscillator();
   osc.type = 'triangle';
-  osc.frequency.value = 330;
+  osc.frequency.value = pitch;
   const env = audio.createGain();
   env.gain.setValueAtTime(0, t);
   env.gain.linearRampToValueAtTime(loudness, t + 0.005);
@@ -555,7 +569,7 @@ function checkPluck(id, p, now) {
       const u = alongOf(s, { x: lerp(mem.at.x, p.x, k), y: lerp(mem.at.y, p.y, k) });
       if (u >= 0 && u <= 1) {
         const speed = dist(p, mem.at) / Math.max(now - mem.atTime, 0.008);
-        pluck(s, u, clamp(0.25 + speed / 3000, 0.25, 1));
+        pluck(s, u, clamp(0.25 + speed / 3000, 0.25, 1), mem.side);
         mem.last = now;
       }
     }
@@ -565,12 +579,26 @@ function checkPluck(id, p, now) {
   }
 }
 
-function pluck(s, u, loudness) {
-  beep(loudness);
+// u = where along the string (0 at peg a, 1 at peg b); fromSide = which side the finger came from
+function pluck(s, u, loudness, fromSide = 1) {
+  const z = zoneAt(s, u);
+  const { notes, label } = zoneNotes(s, z);
+
+  // A chord is strummed: each note a little after the last, like a pick
+  // crossing guitar strings. Sweep one way and it goes low to high; sweep
+  // back and it goes high to low.
+  const order = fromSide > 0 ? notes : [...notes].reverse();
+  const t = audio ? audio.currentTime : 0;
+  order.forEach((m, i) => beep(midiToPitch(m), loudness * (notes.length > 1 ? 0.7 : 1), t + i * STRUM_GAP));
+
   s.wobble = 6 + 18 * loudness;
   s.wobbleAt = performance.now();
   s.wobbleU = clamp(u, 0.1, 0.9);
+  s.flashZone = z;
   s.plucks++;
+  s.lastNotes = notes;
+  const at = { x: lerp(s.a.x, s.b.x, u), y: lerp(s.a.y, s.b.y, u) };
+  pops.push({ ...at, text: label, t: performance.now() });
 }
 
 // Which pointers may pluck right now?
@@ -632,6 +660,7 @@ function draw() {
   for (const s of strings) drawString(s);
   drawPreview();
   drawBursts();
+  drawPops();
   slots.forEach((h, i) => h && drawHand(h, i));
   if (mouse.on) drawAim({ x: mouse.x, y: mouse.y }, COLORS.hands[0], mouse.down);
 }
@@ -660,9 +689,62 @@ function drawString(s) {
   }
   ctx.stroke();
 
-  ctx.fillStyle = doomed ? COLORS.hands[1] : COLORS.hands[0];
-  dot(a, 7);
-  dot(b, 7);
+  // Zone marks: a small tick across the string between each pair of notes.
+  // The zone just plucked glows for a moment.
+  if (!doomed) {
+    const n = zoneCount(s), low = lowEnd(s);
+    const P = k => {   // point k of the way from the low end (0) to the high end (1)
+      const u = low === 'a' ? k : 1 - k;
+      return { x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u) };
+    };
+    ctx.strokeStyle = COLORS.dust;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let z = 1; z < n; z++) {
+      const q = P(z / n);
+      ctx.moveTo(q.x - nx * 6, q.y - ny * 6);
+      ctx.lineTo(q.x + nx * 6, q.y + ny * 6);
+    }
+    ctx.stroke();
+
+    const glow = 1 - (performance.now() - s.wobbleAt) / 400;
+    if (glow > 0 && s.flashZone != null) {
+      const p0 = P(s.flashZone / n), p1 = P((s.flashZone + 1) / n);
+      ctx.strokeStyle = COLORS.hands[0];
+      ctx.globalAlpha = glow;
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      ctx.lineTo(p1.x, p1.y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Pegs: the low end is a filled dot, the high end a ring, so you can tell them apart
+  ctx.fillStyle = ctx.strokeStyle = doomed ? COLORS.hands[1] : COLORS.hands[0];
+  const lowPeg = s[lowEnd(s)], highPeg = s[lowEnd(s) === 'a' ? 'b' : 'a'];
+  dot(lowPeg, 7);
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(highPeg.x, highPeg.y, 6, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+// The note name floats up from where you plucked, and fades
+const pops = [];
+function drawPops() {
+  const t = performance.now();
+  ctx.font = '600 20px "Bricolage Grotesque", sans-serif';
+  ctx.textAlign = 'center';
+  for (let i = pops.length - 1; i >= 0; i--) {
+    const k = (t - pops[i].t) / 900;
+    if (k >= 1) { pops.splice(i, 1); continue; }
+    ctx.globalAlpha = 1 - k;
+    ctx.fillStyle = COLORS.bone;
+    ctx.fillText(pops[i].text, pops[i].x, pops[i].y - 24 - k * 40);
+  }
+  ctx.globalAlpha = 1;
 }
 
 // The dashed line while a new string is being stretched.
@@ -812,8 +894,105 @@ addEventListener('pointerup', () => {
   pinchEnd('mouse', seconds());
 });
 
+// ── 18. Notes along a string ─────────────────────────────────
+// A string is cut into equal zones, one note per zone. The number of
+// zones depends on length: one per ZONE_SIZE pixels, so a longer string
+// holds more notes. Notes climb from the low end to the high end.
+//
+// Music in numbers: every note has a MIDI number. Middle C is 60, and each
+// step up (a semitone, one piano key) adds 1. 12 steps make an octave,
+// which doubles the pitch. A4 = 69 = 440 vibrations per second.
+const ZONE_SIZE = 70;               // pixels per note
+const MIN_ZONES = 3, MAX_ZONES = 15;
+const BASE_NOTE = 48;               // C3: the lowest note of a string in the key of C
+const STRUM_GAP = 0.018;            // seconds between the notes of a strummed chord
+
+const NOTE_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+
+// A scale is the set of steps, counted up from the key note, that sound
+// good together. "parent" is the full 7-note scale used to build chords.
+const SCALES = {
+  major:    { name: 'Major',            steps: [0, 2, 4, 5, 7, 9, 11] },
+  minor:    { name: 'Minor',            steps: [0, 2, 3, 5, 7, 8, 10] },
+  pentamaj: { name: 'Major pentatonic', steps: [0, 2, 4, 7, 9],        parent: 'major' },
+  pentamin: { name: 'Minor pentatonic', steps: [0, 3, 5, 7, 10],       parent: 'minor' },
+  blues:    { name: 'Blues',            steps: [0, 3, 5, 6, 7, 10],    parent: 'minor' },
+  dorian:   { name: 'Dorian',           steps: [0, 2, 3, 5, 7, 9, 10] },
+  hijaz:    { name: 'Hijaz',            steps: [0, 1, 4, 5, 7, 8, 10] },
+};
+const SCALE_ORDER = Object.keys(SCALES);
+
+const music = { key: 0, scale: 'major', mode: 'notes' };   // key 0 = C, 1 = C♯ ... 11 = B
+
+const midiToPitch = m => 440 * Math.pow(2, (m - 69) / 12);
+const noteName = m => NOTE_NAMES[((m % 12) + 12) % 12];
+
+function zoneCount(s) {
+  return clamp(Math.round(dist(s.a, s.b) / ZONE_SIZE), MIN_ZONES, MAX_ZONES);
+}
+
+// The low end is the left peg. On a steep string (closer to upright than
+// flat) it's the bottom peg, so notes rise as you go up.
+function lowEnd(s) {
+  const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+  if (Math.abs(dy) > Math.abs(dx)) return dy > 0 ? 'b' : 'a';
+  return dx >= 0 ? 'a' : 'b';
+}
+
+// Which zone is at position u (0 at peg a, 1 at peg b)? Zone 0 is at the low end.
+function zoneAt(s, u) {
+  const k = lowEnd(s) === 'a' ? u : 1 - u;
+  return clamp(Math.floor(k * zoneCount(s)), 0, zoneCount(s) - 1);
+}
+
+// Step number d of a scale, as a MIDI note. Past the end of the scale it
+// wraps round into the next octave: in C major, step 7 is the C above.
+function degree(scaleId, d) {
+  const steps = SCALES[scaleId].steps, n = steps.length;
+  return BASE_NOTE + music.key + 12 * Math.floor(d / n) + steps[((d % n) + n) % n];
+}
+
+// ── 19. Chords ───────────────────────────────────────────────
+// A basic chord (a "triad") is three notes: a scale step, the step two
+// above it, and the step two above that. In C major, step 0 gives C-E-G
+// (C major), step 1 gives D-F-A (D minor). Every chord fits the key.
+//
+// Pentatonic and blues scales are too gappy to build chords this way,
+// so they borrow chords from their parent scale.
+function zoneNotes(s, z) {
+  if (music.mode === 'chords') {
+    const sc = SCALES[music.scale].parent || music.scale;
+    const notes = [0, 2, 4].map(k => degree(sc, z + k));
+    return { notes, label: chordName(notes) };
+  }
+  const m = degree(music.scale, z);
+  return { notes: [m], label: noteName(m) };
+}
+
+// Name a triad from the gaps between its notes (in semitones)
+function chordName([root, third, fifth]) {
+  const a = third - root, b = fifth - root;
+  const kind = a === 4 && b === 7 ? '' : a === 3 && b === 7 ? 'm' : a === 3 && b === 6 ? 'dim' : a === 4 && b === 8 ? 'aug' : '?';
+  return noteName(root) + kind;
+}
+
+// The top-bar buttons: click for the next choice, Shift-click for the previous one
+function showMusic() {
+  $('keyBtn').textContent = 'Key: ' + NOTE_NAMES[music.key];
+  $('scaleBtn').textContent = SCALES[music.scale].name;
+  $('modeBtn').textContent = music.mode === 'notes' ? 'Single notes' : 'Chords';
+}
+$('keyBtn').addEventListener('click', e => { music.key = (music.key + (e.shiftKey ? 11 : 1)) % 12; showMusic(); });
+$('scaleBtn').addEventListener('click', e => {
+  const i = SCALE_ORDER.indexOf(music.scale) + (e.shiftKey ? -1 : 1);
+  music.scale = SCALE_ORDER[(i + SCALE_ORDER.length) % SCALE_ORDER.length];
+  showMusic();
+});
+$('modeBtn').addEventListener('click', () => { music.mode = music.mode === 'notes' ? 'chords' : 'notes'; showMusic(); });
+showMusic();
+
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { Smoother, assignHands, updateGrabs, plucking, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master }), get preview() { return preview; } };
+window.airStrings = { Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master }), get preview() { return preview; } };
 
 loop();
 </script>
