@@ -16,8 +16,8 @@ His repo has no license, so this matches what it does, in my own code, name and 
 
 ## Next step
 
-Test Stage 5: sweep along a string to hear the notes climb, change key and scale, try chords.
-Then Stage 6: a real plucked-string sound (Karplus-Strong) and reverb.
+Test Stage 6: listen to the new string sound, soft and hard plucks, and strum chords hard to check for crackle.
+Then Stage 7: the string menu, picked by hand.
 
 ## Stages
 
@@ -28,7 +28,7 @@ Then Stage 6: a real plucked-string sound (Karplus-Strong) and reverb.
 | 3 | One string that beeps when a fingertip crosses it | [stage-3.md](lessons/stage-3.md) |
 | 4 | Precise pinch, pinch jobs, make, drag and delete strings | [stage-4.md](lessons/stage-4.md) |
 | 5 | Notes and scales along each string, longer strings hold more notes, chord mode | [stage-5.md](lessons/stage-5.md) |
-| 6 | Real string sound (Karplus-Strong) and reverb | - |
+| 6 | Real string sound (Karplus-Strong) and reverb | [stage-6.md](lessons/stage-6.md) |
 | 7 | The string menu: instrument, scale and key, by pointing or pinching | - |
 | 8 | All 24 instruments, drums included | - |
 | 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | - |

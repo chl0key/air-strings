@@ -101,7 +101,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 5: every spot along a string plays its own note, low at the left end and high at the right. Longer strings hold more notes. Pick a key and a scale at the top, or switch strings to chords.</p>
+  <p>Stage 6: the strings sound like strings now, in a room with a little echo. Every spot along a string plays its own note. Pick a key and a scale at the top, or switch to chords.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -127,10 +127,15 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 5: notes, scales and chords
+//  AIR STRINGS · Stage 6: a real string sound
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • Karplus-Strong: a plucked-string sound built from noise (section 12b)
+//    • Reverb, from a made-up room (section 12a)
+//    • A limiter, so loud chords don't distort, and harder plucks sound brighter
+//
+//  From Stage 5:
 //    • Each string is split into zones, one note per zone (section 18)
 //    • Longer strings hold more notes
 //    • A key and a scale for everything, plus a chords mode (sections 18-19)
@@ -505,35 +510,166 @@ function nearestPeg(p, radius) {
 $('clear').addEventListener('click', () => { [...strings].forEach(removeString); });
 
 // ── 12. Sound ────────────────────────────────────────────────
-//   oscillator ──► gain (volume shape) ──► master gain ──► speakers
-let audio = null, master = null;
+// The whole sound path, from one note to the speakers:
+//
+//   note ──► tone filter ──► volume ─┬──────────────────────► master ──► limiter ──► speakers
+//                                    └──► reverb send ──► reverb ──┘
+//
+// • The tone filter makes soft plucks darker and hard plucks brighter.
+// • The reverb adds the echo of a room, so notes don't sound bone dry.
+// • The limiter (a "compressor") stops loud chords from distorting.
+let audio = null, master = null, reverbIn = null, limiter = null;
 
 function startAudio() {
   if (!audio) {
     audio = new AudioContext({ latencyHint: 'interactive' });
+
+    limiter = audio.createDynamicsCompressor();
+    limiter.threshold.value = -10;   // start squashing above this level (in decibels)
+    limiter.knee.value = 6;          // ease into it rather than snapping on
+    limiter.ratio.value = 20;        // above the threshold, 20 dB in comes out as 1 dB
+    limiter.attack.value = 0.001;    // react within a thousandth of a second
+    limiter.release.value = 0.2;
+    limiter.connect(audio.destination);
+
     master = audio.createGain();
-    master.gain.value = 0.6;
-    master.connect(audio.destination);
+    master.gain.value = 0.45;   // headroom: many notes ringing at once add up fast
+    master.connect(limiter);
+
+    const reverb = audio.createConvolver();
+    reverb.buffer = makeRoom(audio, ROOM_SECONDS);
+    reverbIn = audio.createGain();
+    reverbIn.gain.value = REVERB_AMOUNT;
+    reverbIn.connect(reverb);
+    reverb.connect(master);
   }
   if (audio.state !== 'running') audio.resume();
 }
 
-// One note. pitch = vibrations per second, loudness 0-1, when = audio clock time.
-// (Stage 6 swaps this beep for a real plucked-string sound.)
-function beep(pitch, loudness, when) {
+// ── 12a. Reverb ──────────────────────────────────────────────
+// A real room answers every sound with thousands of tiny echoes off the
+// walls, packed so close they blur into one fading tail. A recording of
+// that tail, for one sharp click, is called an "impulse response".
+//
+// We don't need a recording: random noise that fades away sounds a lot
+// like one. The convolver then plays that tail after every note.
+const ROOM_SECONDS = 2.2;      // how long the tail lasts
+const REVERB_AMOUNT = 0.28;    // how much of each note goes to the reverb
+
+function makeRoom(ctx, seconds) {
+  const len = Math.floor(ctx.sampleRate * seconds);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);   // 2 channels: left and right differ, so it sounds wide
+  for (let ch = 0; ch < 2; ch++) {
+    const d = buf.getChannelData(ch);
+    let soft = 0;
+    for (let i = 0; i < len; i++) {
+      const k = i / len;
+      soft += 0.3 * ((Math.random() * 2 - 1) - soft);   // soften the noise: walls swallow high sounds
+      const fadeIn = Math.min(1, i / (ctx.sampleRate * 0.01));
+      d[i] = soft * Math.pow(1 - k, 3) * fadeIn;
+    }
+  }
+  return buf;
+}
+
+// ── 12b. The plucked string: Karplus-Strong ──────────────────
+// In 1983, Kevin Karplus and Alex Strong found a cheap way to fake a
+// plucked string, and it still sounds good.
+//
+// 1. Fill a short loop with random noise. That's the pluck: a burst of
+//    every frequency at once, like a pick snapping off a string.
+// 2. Play the loop round and round. A loop that repeats f times a second
+//    is heard as a note of pitch f. So the loop's length sets the note.
+// 3. Each time round, replace every sample with the average of itself and
+//    its neighbour. Averaging smooths out fast wiggles first, so the high
+//    sounds fade quickest. That's what a real string does: bright at the
+//    start, mellow as it dies away.
+// 4. Also shrink everything a little each time round, so the note fades.
+//
+// Each note is worked out once, saved, and replayed from then on.
+const STRING_SOUND = {
+  seconds: 3.0,       // how long each note lasts
+  ring: 3.2,          // seconds for a note to fade to silence (1/1000 of its start)
+  bright: 0.55,       // 0-1: how bright the starting noise is
+  pickAt: 0.18,       // 0-0.5: where along the string it's plucked. Near the end = twangier
+};
+const noteCache = new Map();
+
+function stringNote(midi) {
+  if (noteCache.has(midi)) return noteCache.get(midi);
+  const sr = audio.sampleRate, P = STRING_SOUND;
+  const pitch = midiToPitch(midi);
+  const out = new Float32Array(Math.floor(sr * P.seconds));
+
+  // How many samples long is one trip round the loop? Usually not a whole
+  // number. The averaging step adds half a sample of delay on its own.
+  const period = sr / pitch - 0.5;
+  let N = Math.floor(period), frac = period - N;
+  if (frac < 0.1) { N -= 1; frac += 1; }
+  // The leftover fraction of a sample is made up with an "all-pass" filter,
+  // which delays sound by a fraction of a sample without changing its tone.
+  // Without it, high notes would be out of tune.
+  const ap = (1 - frac) / (1 + frac);
+
+  // 1. The pluck: a loop full of softened noise
+  const loop = new Float32Array(N);
+  let soft = 0;
+  for (let i = 0; i < N; i++) { soft += P.bright * ((Math.random() * 2 - 1) - soft); loop[i] = soft; }
+  // Plucking away from the middle: subtract a shifted copy of the noise.
+  // This cancels the tones a real string can't make when plucked there.
+  const shift = Math.max(1, Math.round(P.pickAt * N)), copy = loop.slice();
+  for (let i = 0; i < N; i++) loop[i] = copy[i] - copy[(i - shift + N) % N];
+
+  // 4. How much to shrink per trip round the loop, so it fades over "ring" seconds
+  const shrink = Math.pow(0.001, 1 / (pitch * P.ring));
+
+  // 2 and 3. Play the loop round and round, averaging as we go
+  let i = 0, prev = 0, apIn = 0, apOut = 0;
+  for (let n = 0; n < out.length; n++) {
+    const x = loop[i];
+    out[n] = x;
+    const avg = 0.5 * (x + prev);                 // average with the neighbour
+    prev = x;
+    const y = ap * avg + apIn - ap * apOut;       // the fraction-of-a-sample delay
+    apIn = avg; apOut = y;
+    loop[i] = y * shrink;
+    if (++i === N) i = 0;
+  }
+
+  // Even out the volume, and fade the last 50 ms so it doesn't click
+  let peak = 1e-6;
+  for (const v of out) peak = Math.max(peak, Math.abs(v));
+  const fade = Math.floor(sr * 0.05);
+  for (let n = 0; n < out.length; n++) out[n] *= (0.8 / peak) * Math.min(1, (out.length - n) / fade);
+
+  const buf = audio.createBuffer(1, out.length, sr);
+  buf.getChannelData(0).set(out);
+  if (noteCache.size > 120) noteCache.delete(noteCache.keys().next().value);   // keep memory in check
+  noteCache.set(midi, buf);
+  return buf;
+}
+
+// Play one note on the string sound. loudness 0-1, when = audio clock time.
+function playString(midi, loudness, when) {
   if (!audio) return;
   const t = Math.max(when || 0, audio.currentTime);
-  const osc = audio.createOscillator();
-  osc.type = 'triangle';
-  osc.frequency.value = pitch;
-  const env = audio.createGain();
-  env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(loudness, t + 0.005);
-  env.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
-  osc.connect(env);
-  env.connect(master);
-  osc.start(t);
-  osc.stop(t + 0.85);
+
+  const src = audio.createBufferSource();
+  src.buffer = stringNote(midi);
+
+  // Soft plucks sound darker, hard plucks brighter
+  const tone = audio.createBiquadFilter();
+  tone.type = 'lowpass';
+  tone.frequency.value = 1200 + 7000 * loudness * loudness;
+
+  const vol = audio.createGain();
+  vol.gain.value = 0.25 + 0.75 * loudness;
+
+  src.connect(tone);
+  tone.connect(vol);
+  vol.connect(master);
+  vol.connect(reverbIn);
+  src.start(t);
 }
 
 // ── 13. Plucking ─────────────────────────────────────────────
@@ -589,7 +725,7 @@ function pluck(s, u, loudness, fromSide = 1) {
   // back and it goes high to low.
   const order = fromSide > 0 ? notes : [...notes].reverse();
   const t = audio ? audio.currentTime : 0;
-  order.forEach((m, i) => beep(midiToPitch(m), loudness * (notes.length > 1 ? 0.7 : 1), t + i * STRUM_GAP));
+  order.forEach((m, i) => playString(m, loudness * (notes.length > 1 ? 0.6 : 1), t + i * STRUM_GAP));
 
   s.wobble = 6 + 18 * loudness;
   s.wobbleAt = performance.now();
@@ -992,7 +1128,7 @@ $('modeBtn').addEventListener('click', () => { music.mode = music.mode === 'note
 showMusic();
 
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master }), get preview() { return preview; } };
+window.airStrings = { stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>
