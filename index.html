@@ -204,6 +204,11 @@ const settings = {
   deleteBelow: 60,     // pixels: drag the pegs closer than this and the string is deleted
   maxStrings: 12,
   dotRadius: 28,       // pixels: how close a pinch must be to a string's middle dot
+  aimMemory: 0.5,      // seconds: a pinch goes to what the fingertip pointed at this recently...
+  aimReach: 90,        // pixels: ...as long as the pinch lands within this distance of it
+  buttonPad: 10,       // pixels: extra catch area around top-bar buttons, for hands
+  buttonDwell: 0.8,    // seconds: hold a fingertip on a top-bar button to press it
+  stillMove: 70,       // pixels: a pinch on a dot or button that moves less than this counts as a click
   pluckPause: 0.25,    // seconds after letting go of a pinch before that hand can pluck
 };
 
@@ -421,6 +426,15 @@ function updatePinch(j, h, now) {
 
   // A hand that has only just come into view is often misread for a few
   // frames, so it isn't allowed to start a pinch until it has settled.
+  // Aim lock: while the hand is open, remember what the fingertip points at.
+  // Pinching curls the index finger back toward the thumb, so the pinch
+  // point lands a little short of where you aimed. A pinch soon after aiming
+  // goes to the remembered target (see pinchStart).
+  if (!h.pinched) {
+    const tg = targetAt(h.cursor, true);
+    if (tg) h.aimed = { tg, t: now };
+  }
+
   if (!h.pinched && now - h.born < settings.settleTime) { h.streak = 0; return; }
 
   const wantsChange = h.pinched ? h.ratio > settings.openAt : h.ratio < settings.closeAt;
@@ -429,7 +443,7 @@ function updatePinch(j, h, now) {
   h.streak = 0;
   h.pinched = !h.pinched;
   h.flash = performance.now();
-  if (h.pinched) pinchStart('hand' + j, h.cursor, now);
+  if (h.pinched) pinchStart('hand' + j, h.cursor, now, h.aimed);
   else { pinchEnd('hand' + j, now); h.released = now; }
 }
 
@@ -461,26 +475,53 @@ function pointOf(who) {
   return h ? (h.pinched ? h.at : h.cursor) : null;
 }
 
-function pinchStart(who, p, now) {
-  // 1. A menu is open: the pinch chooses from it, or closes it if it misses
-  if (menu.s) {
-    const item = menuItemAt(p);
-    if (item) chooseItem(item);
+// What's at point p? Checked in this order, first match wins:
+//   1. an option in the open menu (while a menu is open, nothing else counts)
+//   2. a top-bar button (hands only; the mouse clicks buttons directly)
+//   3. a peg
+//   4. a string's middle dot
+function targetAt(p, byHand) {
+  if (menu.s) { const item = menuItemAt(p); return item && { kind: 'item', item }; }
+  const el = byHand && buttonAt(p);
+  if (el) return { kind: 'button', el };
+  const peg = nearestPeg(p, settings.grabRadius);
+  if (peg) return { kind: 'peg', s: peg.s, end: peg.end };
+  const s = nearestDot(p, settings.dotRadius);
+  if (s) return { kind: 'dot', s };
+  return null;
+}
+
+// Where a target is on screen
+function targetPos(tg) {
+  if (tg.kind === 'item') return { x: tg.item.x + tg.item.w / 2, y: tg.item.y + tg.item.h / 2 };
+  if (tg.kind === 'button') { const r = tg.el.getBoundingClientRect(); return { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2 }; }
+  if (tg.kind === 'peg') return tg.s[tg.end];
+  return mid(tg.s.a, tg.s.b);
+}
+
+// A remembered target can go stale: the menu closed, or the string was deleted
+function stillThere(tg) {
+  if (tg.kind === 'item') return !!menu.s && menu.items.includes(tg.item);
+  if (tg.kind === 'peg' || tg.kind === 'dot') return strings.includes(tg.s);
+  return true;
+}
+
+function pinchStart(who, p, now, aimed) {
+  let tg = targetAt(p, who !== 'mouse');
+  // Missed? Use what the fingertip was pointing at a moment ago
+  if (!tg && aimed && now - aimed.t < settings.aimMemory && stillThere(aimed.tg)
+      && dist(p, targetPos(aimed.tg)) < settings.aimReach) tg = aimed.tg;
+
+  if (menu.s) {                       // a menu is open: choose from it, or close it if the pinch missed
+    if (tg && tg.kind === 'item') chooseItem(tg.item);
     else closeMenu();
     grabs[who] = { job: 'used' };
     return;
   }
-  // 2. Over a top-bar button: press it when the pinch lets go
-  const btn = who !== 'mouse' && buttonAt(p);
-  if (btn) { grabs[who] = { job: 'press', el: btn, from: { ...p } }; return; }
-  // 3. Near a peg: drag it
-  const peg = nearestPeg(p, settings.grabRadius);
-  if (peg) { grabs[who] = { job: 'drag', s: peg.s, end: peg.end }; return; }
-  // 4. On a string's middle dot: open its menu when the pinch lets go
-  const dotS = nearestDot(p, settings.dotRadius);
-  if (dotS) { grabs[who] = { job: 'dot', s: dotS, from: { ...p }, t: now }; return; }
-  // 5. Anywhere else: free air
-  grabs[who] = { job: 'free', from: { ...p } };
+  if (!tg) { grabs[who] = { job: 'free', from: { ...p } }; return; }
+  if (tg.kind === 'button') grabs[who] = { job: 'press', el: tg.el, from: { ...p } };   // pressed when the pinch lets go
+  if (tg.kind === 'peg')    grabs[who] = { job: 'drag', s: tg.s, end: tg.end };
+  if (tg.kind === 'dot')    grabs[who] = { job: 'dot', s: tg.s, from: { ...p }, t: now };  // menu opens when the pinch lets go
 }
 
 // Runs every frame: move whatever each pinch is holding
@@ -542,7 +583,7 @@ function pinchEnd(who, now, lost) {
 
   // A dot or a button only counts if the pinch stayed put: a quick, still
   // pinch-and-release, like a click
-  const p = pointOf(who), still = g.from && p && dist(p, g.from) < 50;
+  const p = pointOf(who), still = g.from && p && dist(p, g.from) < settings.stillMove;
   if (g.job === 'dot' && still && now - g.t < 1.2 && strings.includes(g.s)) openMenu(g.s);
   if (g.job === 'press' && still && !lost) g.el.click();
 }
@@ -843,7 +884,7 @@ function loop() {
 
   updateGrabs(now);
   updateMenu(now);
-  updateButtonHover();
+  updateButtonHover(now);
   plucking(now);
   draw();
   updatePanel();
@@ -1025,15 +1066,24 @@ function drawHand(h, i) {
   for (const k of FINGERTIPS) dot(p[k], k === INDEX_TIP ? 9 : 6);   // the index tip plucks, so it's biggest
 
   drawAim(h.cursor, color, h.pinched, h.flash);
+
+  // Holding on a top-bar button: a ring fills around the fingertip, then it's pressed
+  if (h.btnDwell && !h.btnDwell.done) {
+    const k = clamp((seconds() - h.btnDwell.since) / settings.buttonDwell, 0, 1);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(h.cursor.x, h.cursor.y, 26, -Math.PI / 2, -Math.PI / 2 + k * Math.PI * 2);
+    ctx.stroke();
+  }
 }
 
 // The pinch point. When it's near a peg, the peg gets a ring, so you can
 // see what a pinch would grab before you close it.
 function drawAim(p, color, closed, flash = 0) {
   // Show what a pinch here would grab: a peg first, then a string's middle dot
-  const peg = !closed && !menu.s && nearestPeg(p, settings.grabRadius);
-  const dotS = !closed && !menu.s && !peg && nearestDot(p, settings.dotRadius);
-  const target = peg ? peg.s[peg.end] : dotS ? mid(dotS.a, dotS.b) : null;
+  const tg = !closed && !menu.s && targetAt(p, false);
+  const target = !tg ? null : tg.kind === 'peg' ? tg.s[tg.end] : tg.kind === 'dot' ? mid(tg.s.a, tg.s.b) : null;
   if (target) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
@@ -1412,19 +1462,37 @@ addEventListener('resize', () => { if (menu.s) layoutMenu(); });
 // The canvas and the buttons share the same screen positions, so we can
 // ask the page which element is under a hand's pinch point. If it's a
 // button, it gets a ring, and a still pinch-and-release presses it.
+// Hands are less exact than a mouse, so each button catches a hand a few
+// pixels beyond its edges (buttonPad). Nearest button wins.
 function buttonAt(p) {
-  const el = document.elementFromPoint(p.x, p.y);
-  return el && el.closest ? el.closest('#bar button') : null;
+  if ($('bar').classList.contains('hidden')) return null;
+  let best = null, bd = Infinity;
+  for (const b of document.querySelectorAll('#bar button')) {
+    const r = b.getBoundingClientRect(), pad = settings.buttonPad;
+    if (p.x < r.left - pad || p.x > r.right + pad || p.y < r.top - pad || p.y > r.bottom + pad) continue;
+    const d = Math.hypot(p.x - (r.left + r.right) / 2, p.y - (r.top + r.bottom) / 2);
+    if (d < bd) { bd = d; best = b; }
+  }
+  return best;
 }
 
-function updateButtonHover() {
+// Rings on hovered buttons, and the dwell press: hold a fingertip on a
+// button for buttonDwell seconds and it's pressed. Move off and back to press again.
+function updateButtonHover(now) {
   const hovered = new Set();
-  slots.forEach(h => { if (h) { const b = buttonAt(h.cursor); if (b) hovered.add(b); } });
+  slots.forEach(h => {
+    if (!h) return;
+    const b = !h.pinched && !menu.s && buttonAt(h.cursor);
+    if (!b) { h.btnDwell = null; return; }
+    hovered.add(b);
+    if (!h.btnDwell || h.btnDwell.el !== b) h.btnDwell = { el: b, since: now, done: false };
+    if (!h.btnDwell.done && now - h.btnDwell.since >= settings.buttonDwell) { h.btnDwell.done = true; b.click(); }
+  });
   for (const b of document.querySelectorAll('#bar button')) b.classList.toggle('hand-hover', hovered.has(b));
 }
 
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>

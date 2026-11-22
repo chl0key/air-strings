@@ -136,3 +136,41 @@
 - Every earlier test still passes
 
 **Setting:** `POINTER_OPEN` in section 2 is how open the hand must be for the pointer to sit fully on the fingertip
+
+## Fix after testing: aim lock
+
+**What happened**
+- After the fingertip fix, the middle dot and the top-bar buttons got hard to pinch
+- You aim with your fingertip, then pinch
+  - Pinching curls your index finger back to meet your thumb
+- So the pinch point lands 20 to 40 px short of where you aimed, and small targets missed
+
+**What changed**
+- **Aim lock** (`targetAt` and `pinchStart` in section 10)
+  - While your hand is open, the app remembers what your fingertip points at
+  - A pinch within half a second goes to that target, even if it lands short
+  - Only if the pinch lands within 90 px of it
+    - A fingertip that passed over a dot on its way elsewhere doesn't steal a pinch meant for making a string
+- **Bigger catch area:** top-bar buttons catch a hand 10 px beyond their edges
+- **Hold to press:** hold your fingertip on a top-bar button for 0.8 seconds
+  - A ring fills around your fingertip, then the button is pressed
+  - It presses once; move off and back to press again
+- **More forgiving clicks:** a pinch on a dot or button can now wander 70 px (was 50) and still count
+
+**One list of targets**
+- `targetAt` is now the single place that decides what's under a point:
+  1. A menu option
+  2. A top-bar button
+  3. A peg
+  4. A middle dot
+- Pinching, aim lock and the aiming rings all use it, so they always agree
+
+**Tested**
+- Aim at the dot, pinch lands 35 px short: the menu opens
+- Aim at **Dorian**, pinch lands 36 px short: **Dorian** is chosen, by the pinch and not the hover timer
+- Aim at the scale button, pinch lands below it: the button is pressed
+- Fingertip held on a button: nothing at 0.5 s, pressed at 1.0 s, still pressed only once at 2.5 s
+- Fingertip crosses a dot, then pinches 225 px away: free air, so string-making still works
+- Every earlier test still passes
+
+**Settings:** `aimMemory`, `aimReach`, `buttonPad`, `buttonDwell` and `stillMove` in section 3
