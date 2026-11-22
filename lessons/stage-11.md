@@ -104,3 +104,30 @@ hats:  x-x-x-x-x-x-x-x-
 - The beat loops, but what you play on the strings vanishes as soon as it's played
 - A looper records what you play and plays it back on every loop, so you can stack layers
 - What does it need to remember about each pluck, so it can replay it later?
+
+## Fix after testing: flat and sharp signs
+
+**What happened**
+- ♭ and ♯ showed as question marks on your Mac
+- Bricolage Grotesque doesn't include those two signs
+  - Each browser then borrows them from some other font, and yours found nothing
+
+**What changed**
+- The page now carries its own tiny font with just ♭ and ♯
+  - 840 bytes, cut from Noto Sans Symbols, which is free to share under the SIL Open Font License
+- It's written right into the page (a `data:` address), so there's nothing extra to download and it works offline
+- `unicode-range` tells the browser to use it for those two signs only
+- `size-adjust: 120%` brings them up to the height of the letters
+- Buttons have a fixed line height, so a ♭ can't make a button taller
+
+**Choosing the font**
+- I compared four fonts at three sizes, side by side:
+  - **Noto Music:** its signs are made for sheet music and crowded the letters
+  - **Noto Sans Symbols 2:** didn't load
+  - **Noto Sans Symbols:** clean and even at 120%
+
+**Tested**
+- The browser confirms the font is ready for both signs
+- "C♯ E♭ F♯ A♭ B♭" renders in the key panel, the top bar and the note names on strings
+- Button heights stay at 36 px with or without a ♭
+- The top-bar buttons still don't move

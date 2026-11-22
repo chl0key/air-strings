@@ -8,6 +8,19 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
 <style>
+  /* ── The flat and sharp signs ─────────────────────────────
+     Bricolage Grotesque has no ♭ or ♯, and without a font that does, some
+     browsers show question marks. So the page carries its own tiny font with
+     just those two signs (840 bytes, cut from Noto Sans Symbols, which is free
+     to share under the SIL Open Font License). "size-adjust" draws them 20%
+     larger, to match the height of the letters beside them. */
+  @font-face {
+    font-family: 'Air Accidentals';
+    src: url(data:font/woff2;base64,d09GMgABAAAAAANIABEAAAAABoAAAALsAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhYbHhw6BmA/U1RBVC4ARBEICoFsgVgLCgABNgIkAxAEIAWEPgcgFyQYChs1BcgEHvq86v2fpAdQRuru6uEKGDEDn3avgHWT/udyoFdxQPVJUro96PrYGoM0i3rZ2NYLKC3xVGMLcX9dLgWvRgDOaIqsoYJInzkSTDCiY+eeA7FHHXT+/5/DOoFMMtHej8pprCpFz82rs6EXVOWVoJdm1ZSjzxx56bCquIppaCAnyKGC2iPdRozGJtrj5RXJq12tO1369OnCMfQYQzv39wwX087J5iRSSH95QVR06iiwVxTvuC0YWV9QWCN4lCi8K8U0WTvELK3QMzXlBVfFqqI99v0ZPaYsxqDN5VX/X96fdX/mLzkMGfH/P24Cw6QHe0njpS6KNmKGoaL9iQRVDQtWnTQXNdtFc+6mOamBqy9eTVy4VIzf4DjhVlLo1rtOE48z7lbXVaccB4mBYkjoc8LHQMJR0J1fGn1h4YUCW1puGnFZ0UOqpUe0/bZ9/kEuvmFt0waojzukREdtt2S2GzZ/YfMAZr1blGXunZX81b5vXmqZtKzXBsvcrOReWeavWYn86YQtloXLem39s6zX12W9yCrPmHwmOf3PZf/nMW4tv9oryjshcuvrrdeDh47NSP716e9FU5x2VFBMwJgtYbdop6nfr0+/b5viYLHeaVUOZbQYQYqMJ2Vr6NH9VLEJbzqjzmU3JuxAVW6pDqp/kbCCIEK4gsRVAAodOQQqNiaARiAVYMJM+6Ar6Tg7Qr0Op4aQRxEFFFITttZQQTXNsSiHqsmhiiIqqBEls03yr5ZixqCKAiz0oTM96Y1BDf+5AWRRTjUDaKSMbAxKqSaZ/uRRQC2lZFHFYPJU+iO2wcUZtGHGipUUy9DVdboaSh967V+2oAt96EMXWlAZU5vx95UdMKigEQkLjKZ/2IoNGzoDKSRPGfrEqb5UYVBMHjnzsB21kGl89IfXxwHHAopGpVrxkpkcDMqwUP4xJR8ZvRX01oyQUuIvOKVv/L8IG16lcEd8+ed8sPMOPxS7vw/L8CVvR/5TxilN2jkA) format('woff2');
+    unicode-range: U+266D, U+266F;
+    size-adjust: 120%;
+  }
+
   /* ── Colors ──────────────────────────────────────────────
      Every color lives here, so the look can change in one place.
      Theme: a practice room late at night, lit by one warm lamp. */
@@ -25,7 +38,7 @@
   body {
     background: var(--room);
     color: var(--bone);
-    font-family: 'Bricolage Grotesque', sans-serif;
+    font-family: 'Bricolage Grotesque', 'Air Accidentals', sans-serif;
     overflow: hidden;
   }
 
@@ -46,7 +59,7 @@
   #start h1 { margin: 0; font-size: clamp(48px, 9vw, 112px); font-weight: 800; line-height: 0.95; letter-spacing: -0.02em; }
   #start p  { margin: 0; max-width: 34em; font-size: 18px; line-height: 1.5; color: var(--dust); }
   button {
-    font: inherit; font-size: 18px; font-weight: 600;
+    font: inherit; font-size: 18px; font-weight: 600; line-height: 1.2;   /* fixed, so a ♭ can't make a button taller */
     color: var(--room); background: var(--lamp);
     border: 0; border-radius: 999px; padding: 14px 28px; cursor: pointer;
   }
@@ -938,7 +951,7 @@ function osc(type, freq, t, dur, out) {
   const o = audio.createOscillator();
   o.type = type;
   o.frequency.value = freq;
-  o.connect(out);
+  if (out) o.connect(out);     // (an FM modulator is connected by hand instead)
   o.start(t);
   o.stop(t + dur + 0.1);
   if (collecting) collecting.push(o);
@@ -1125,14 +1138,37 @@ function buildNote(id, midi, loudness, t, held) {
       break;
     }
     case 'brass': {
-      // Brass gets brighter as you blow harder: a filter that opens at the start.
-      // The note also starts a touch flat and slides up, like a lip settling.
-      const g = swell(out, t, 0.03, L, 0.12, 0.4);
-      const tone = filterNode('lowpass', f * 1.5, 1.2, g);
-      env(tone.frequency, t, [[0, f * 1.5], [0.06, f * (6 + 4 * loudness)], [0.3, f * 5]]);
-      const o = osc('sawtooth', f, t, L + 0.2, tone);
-      env(o.detune, t, [[0, -40], [0.06, 0]], 'lin');
-      vibrato([o], t, L + 0.2, 5.5, 8, 0.3);
+      // A trumpet, built from its harmonics (sine waves at 1x, 2x, 3x... the
+      // note's pitch), following Jean-Claude Risset's 1960s study of real
+      // trumpet recordings. Two things make it brass:
+      //   • Louder notes have stronger high harmonics: the harder you blow,
+      //     the brighter it gets. "slope" is how fast the harmonics fall away.
+      //   • High harmonics start a few milliseconds after low ones. That
+      //     stagger is the "blat" at the start of a brass note.
+      // The 2nd harmonic is the strongest, as on a real trumpet.
+      const slope = 5.5 - 3.5 * loudness;               // dB lost per harmonic: 5.5 soft, 2 loud
+      const g = gainNode(0.16);
+      // A resonance near 1,400 Hz gives the brassy ring
+      const ring = audio.createBiquadFilter();
+      ring.type = 'peaking'; ring.frequency.value = 1400; ring.Q.value = 1.1; ring.gain.value = 4;
+      g.connect(ring);
+      ring.connect(out);
+      const oscs = [];
+      for (let n = 1; n <= 16 && f * n < 12000; n++) {
+        const db = n === 1 ? -3 : -(n - 2) * slope;
+        const level = Math.pow(10, db / 20);
+        const h = gainNode(0, g);
+        const rise = 0.015 + 0.006 * n;                  // later for higher harmonics
+        env(h.gain, t, [[0, 0], [rise, level], [0.15, level * 0.85], [L, level * 0.8], [L + 0.12, 0]], 'lin');
+        oscs.push(osc('sine', f * n, t, L + 0.3, h));
+      }
+      // The lip "scoop": start a little flat and slide up into the note
+      for (const o of oscs) env(o.detune, t, [[0, -35], [0.05, 0]], 'lin');
+      vibrato(oscs, t, L + 0.3, 5.5, 9, 0.3);
+      // A puff of breath at the start
+      const puff = gainNode(0, filterNode('bandpass', 1800, 2, out));
+      env(puff.gain, t, [[0, 0.0001], [0.01, 0.05 * loudness + 0.02], [0.07, 0.0001]]);
+      noise(t, 0.08, puff);
       break;
     }
     case 'voices': {
@@ -1484,7 +1520,7 @@ function drawString(s) {
     ctx.stroke();
 
     // The instrument's name, just off the string, on the side away from the menu
-    ctx.font = '600 13px "Bricolage Grotesque", sans-serif';
+    ctx.font = '600 13px "Bricolage Grotesque", "Air Accidentals", sans-serif';
     ctx.textAlign = 'center';
     ctx.fillStyle = COLORS.dust;
     const side = ny > 0 ? 1 : -1;    // push the label downward, whichever way the string slopes
@@ -1515,7 +1551,7 @@ function drawString(s) {
 const pops = [];
 function drawPops() {
   const t = performance.now();
-  ctx.font = '600 20px "Bricolage Grotesque", sans-serif';
+  ctx.font = '600 20px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'center';
   for (let i = pops.length - 1; i >= 0; i--) {
     const k = (t - pops[i].t) / 900;
@@ -1831,6 +1867,8 @@ function fixButtonWidths() {
   showMusic();   // put the real labels back
 }
 document.fonts.ready.then(fixButtonWidths);
+// Canvas text doesn't ask the browser to load fonts, so load the flat and sharp signs up front
+document.fonts.load('600 16px "Air Accidentals"', '♭♯').then(fixButtonWidths);
 
 // ── 20. The string menu ──────────────────────────────────────
 // Opens beside a string's middle dot. Every option is a box on the canvas.
@@ -2026,12 +2064,12 @@ function drawMenu() {
   roundRect(b.x, b.y, b.w, b.h, 14);
   ctx.fill();
 
-  ctx.font = '600 13px "Bricolage Grotesque", sans-serif';
+  ctx.font = '600 13px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'left';
   ctx.fillStyle = COLORS.dust;
   for (const t of menu.titles) ctx.fillText(t.text, t.x, t.y);
 
-  ctx.font = '600 16px "Bricolage Grotesque", sans-serif';
+  ctx.font = '600 16px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'center';
   const hovered = new Map(Object.values(menu.hover).map(h => [h.it, h]));
   for (const it of menu.items) {
@@ -2361,7 +2399,7 @@ function drawAirPad() {
   ctx.globalAlpha = 1;
 
   // Direction names at the ends of the cross, lit when that effect is on
-  ctx.font = '600 14px "Bricolage Grotesque", sans-serif';
+  ctx.font = '600 14px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'center';
   const label = (text, x, y, on) => { ctx.fillStyle = on ? COLORS.hands[0] : COLORS.dust; ctx.fillText(text, x, y); };
   label('Thinner', from.x, from.y - R - 10, thin > 0);
@@ -2538,7 +2576,7 @@ function drawBeatLights() {
     dot({ x: 24 + i * 16 + Math.floor(i / 4) * 6, y: 34 }, i % 4 === 0 ? 5 : 3.5);
   }
   ctx.globalAlpha = 1;
-  ctx.font = '600 13px "Bricolage Grotesque", sans-serif';
+  ctx.font = '600 13px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'left';
   ctx.fillStyle = COLORS.dust;
   ctx.fillText(`${BEATS[beat.pattern].name} at ${beat.bpm} BPM`, 24, 60);

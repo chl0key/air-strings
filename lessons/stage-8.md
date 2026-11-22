@@ -110,3 +110,27 @@
 
 - Rest a finger on a violin string and it keeps singing
 - How could the app tell a finger resting on a string from one sweeping across it?
+
+## Fix after testing: a trumpet that sounds like brass
+
+**What happened**
+- The trumpet sounded like a generic synth
+- It was a buzzy sawtooth through a filter, and its tone barely changed with how hard you played
+  - Soft: 1,429 Hz brightness; loud: 1,499 Hz
+
+**What changed**
+- The trumpet is now built from up to 16 harmonics, one sine wave each, following Jean-Claude Risset's 1960s analysis of real trumpet recordings
+- **Louder means brighter:** the harmonics fall away 5.5 dB per step when soft and only 2 dB when loud
+  - Brightness now runs from 1,368 Hz soft to 1,881 Hz loud
+- **The 2nd harmonic is the strongest**, as on a real trumpet
+- **Higher harmonics start a few milliseconds later**, which makes the brassy "blat" at the start
+- A resonance near 1,400 Hz, a lip "scoop" up into the pitch, vibrato and a puff of breath finish it
+
+**A dead end along the way**
+- I tried FM brass first, Chowning's 1970s method
+- Measured, it lost its main note when played loud (27 dB down) and had almost no upper harmonics
+- So I switched to building it from harmonics
+
+**Tested**
+- In tune: 440.0 Hz for A4
+- Same loudness as before, so it still sits level with the other instruments
