@@ -51,6 +51,8 @@
     border: 0; border-radius: 999px; padding: 14px 28px; cursor: pointer;
   }
   #start button:disabled { opacity: 0.6; cursor: wait; }
+  #start .buttons { display: flex; flex-wrap: wrap; gap: 12px; }
+  #start button.quiet { background: transparent; color: var(--bone); box-shadow: inset 0 0 0 2px var(--dust); }
   #status { min-height: 1.5em; color: var(--lamp); font-size: 16px; }
   .hidden { display: none !important; }
 
@@ -84,8 +86,11 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 2: touch your thumb to your index finger. A ring lights up when the pinch counts. Pinch with both hands to see a line between them.</p>
-  <button id="go">Turn on camera</button>
+  <p>Stage 3: sweep your index fingertip across the string to play it. Sound on. The faster you sweep, the louder it plays.</p>
+  <div class="buttons">
+    <button id="go">Turn on camera</button>
+    <button id="mouse" class="quiet">Use the mouse instead</button>
+  </div>
   <div id="status"></div>
 </section>
 
@@ -99,14 +104,18 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 2: detect a pinch
+//  AIR STRINGS · Stage 3: one string, one sound
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
-//    • Each hand keeps its own slot, so its color no longer swaps (section 7)
-//    • The points are smoothed, so the dots shake less (section 8)
-//    • Pinch detection, measured against the size of your hand (section 9)
-//    • Two pinches at once draw a line between them, a first look at a string (section 11)
+//    • Sound, made by the browser's built-in sound engine (section 13)
+//    • One fixed string across the screen (section 14)
+//    • Pluck detection: a fingertip crossing the string plays it (section 15)
+//    • The mouse can play too, so you can test without the camera (section 16)
+//
+//  From Stage 2:
+//    • Each hand keeps its own slot (section 7), smoothing (section 8)
+//    • Pinch detection (section 9)
 
 // ── 1. Where the hand tracker comes from ─────────────────────
 const MEDIAPIPE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
@@ -174,6 +183,7 @@ resize();
 // ── 6. Start: camera first, then the tracker ─────────────────
 $('go').addEventListener('click', async () => {
   $('go').disabled = true;
+  startAudio();   // browsers only allow sound to start from a click, so we start it here
   try {
     $('status').textContent = 'Waiting for camera permission…';
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -344,7 +354,15 @@ function loop() {
     const fit = videoFit();
     assignHands(result.landmarks.map(points => points.map(p => toScreen(p, fit))), now);
     frames++;
+
+    // Each open hand's index fingertip can pluck. A pinching hand can't,
+    // so making a pinch near the string won't play it by accident.
+    slots.forEach((h, j) => {
+      if (h && !h.pinched) checkPluck('hand' + j, h.pts[INDEX_TIP], now);
+    });
   }
+
+  if (mouse.on) checkPluck('mouse', mouse, now);
 
   draw();
   updatePanel();
@@ -370,6 +388,8 @@ function draw() {
     ctx.drawImage(video, fit.ox, fit.oy, fit.vw * fit.scale, fit.vh * fit.scale);
     ctx.restore();
   }
+
+  if (tracker || mouse.on) drawString();   // not behind the start screen
 
   // Both hands pinching: draw a line between the two pinch points.
   // In Stage 5 this line becomes a string you can keep.
@@ -467,8 +487,188 @@ for (const key of ['closeAt', 'openAt']) {
 }
 showSettings();
 
-// For automated testing only: lets a test feed in made-up hands without a camera.
-window.airStrings = { assignHands, slots, settings };
+// ── 13. Sound ────────────────────────────────────────────────
+// The Web Audio API is a sound studio built into the browser. You create
+// sound sources (like an oscillator, which makes a steady tone), pass them
+// through effects (like a volume knob, called a "gain"), and connect the
+// last one to the speakers ("destination").
+//
+//   oscillator ──► gain (volume shape) ──► master gain ──► speakers
+//
+// Everything is timed against the audio clock (audio.currentTime), which is
+// far steadier than the screen's clock.
+let audio = null;
+let master = null;
+
+function startAudio() {
+  if (!audio) {
+    audio = new AudioContext({ latencyHint: 'interactive' });   // "interactive" = lowest delay
+    master = audio.createGain();
+    master.gain.value = 0.6;
+    master.connect(audio.destination);
+  }
+  if (audio.state !== 'running') audio.resume();
+}
+
+// One beep. Loudness runs from 0 to 1.
+// The volume shape, called an envelope, is what makes it sound plucked:
+// a very fast rise, then a fade that slows down as it goes.
+function beep(loudness) {
+  if (!audio) return;
+  const t = audio.currentTime;
+
+  const osc = audio.createOscillator();
+  osc.type = 'triangle';           // softer than 'square', brighter than 'sine'
+  osc.frequency.value = 330;       // the note E4, in vibrations per second
+
+  const env = audio.createGain();
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(loudness, t + 0.005);       // up in 5 ms
+  env.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);      // down over 0.8 s
+
+  osc.connect(env);
+  env.connect(master);
+  osc.start(t);
+  osc.stop(t + 0.85);    // the browser tidies the oscillator away after it stops
+}
+
+// ── 14. The string ───────────────────────────────────────────
+// For now there's one string, fixed in place. Its ends are stored as
+// fractions of the window, so it stays put when the window is resized.
+// It slopes on purpose: the pluck maths has to work at any angle.
+const STRING = { a: { x: 0.25, y: 0.62 }, b: { x: 0.75, y: 0.42 } };
+const string = {
+  a: { x: 0, y: 0 }, b: { x: 0, y: 0 },
+  wobble: 0, wobbleAt: 0, plucks: 0,   // for the vibration you see after a pluck
+};
+function placeString() {
+  string.a = { x: STRING.a.x * innerWidth, y: STRING.a.y * innerHeight };
+  string.b = { x: STRING.b.x * innerWidth, y: STRING.b.y * innerHeight };
+}
+addEventListener('resize', placeString);
+placeString();
+
+// ── 15. Pluck detection ──────────────────────────────────────
+// Which side of the string is a point on? The cross product answers it.
+//
+// Take the string as an arrow from end a to end b, and a second arrow from
+// a to the point. The cross product of the two arrows is positive when the
+// point is on one side, negative on the other, and zero on the line.
+// Divide it by the string's length and you also get the distance from the
+// line, in pixels.
+//
+// A pluck is a fingertip that was on one side and is now on the other.
+//
+// Three guards stop false plucks:
+//   • DEAD_BAND: within a few pixels of the line, a point counts as on
+//     neither side. Tracker wobble can't flip it back and forth.
+//   • The crossing has to happen between the two ends, not beyond them.
+//   • COOLDOWN: one pointer can't pluck again straight away.
+const DEAD_BAND = 6;      // pixels either side of the line
+const COOLDOWN = 0.1;     // seconds between plucks from the same pointer
+const FORGET_AFTER = 0.4; // seconds: a pointer unseen for longer starts fresh
+
+const pointers = {};      // what we remember about each pointer, by name
+
+function sideOf(p) {
+  const { a, b } = string;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  const cross = dx * (p.y - a.y) - dy * (p.x - a.x);
+  return cross / len;     // + on one side, - on the other, size = distance in pixels
+}
+
+// How far along the string a point sits: 0 at end a, 1 at end b
+function alongOf(p) {
+  const { a, b } = string;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  return ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
+}
+
+function checkPluck(id, p, now) {
+  const d = sideOf(p);
+  let mem = pointers[id];
+  if (!mem || now - mem.seen > FORGET_AFTER) mem = pointers[id] = { side: 0, at: { ...p }, atTime: now, seen: now, lastPluck: 0 };
+
+  // Inside the dead band: remember that we saw it, but don't change its side
+  if (Math.abs(d) < DEAD_BAND) { mem.seen = now; return; }
+  const side = Math.sign(d);
+
+  if (mem.side && side !== mem.side && now - mem.lastPluck > COOLDOWN) {
+    // Where did it cross? Slide along the move from the old point to the new
+    // one, to the spot where the distance passed through zero.
+    const dOld = sideOf(mem.at);
+    const k = dOld / (dOld - d);
+    const crossing = { x: mem.at.x + k * (p.x - mem.at.x), y: mem.at.y + k * (p.y - mem.at.y) };
+    const u = alongOf(crossing);
+
+    if (u >= 0 && u <= 1) {
+      // Faster sweeps play louder: pixels per second, scaled into 0.25-1
+      const speed = dist(p, mem.at) / Math.max(now - mem.atTime, 0.008);
+      pluck(u, clamp(0.25 + speed / 3000, 0.25, 1));
+      mem.lastPluck = now;
+    }
+  }
+  mem.side = side;
+  mem.at = { ...p };
+  mem.atTime = now;
+  mem.seen = now;
+}
+
+function pluck(u, loudness) {
+  beep(loudness);
+  string.wobble = 6 + 18 * loudness;
+  string.wobbleAt = performance.now();
+  string.wobbleU = clamp(u, 0.1, 0.9);
+  string.plucks++;
+}
+
+// Draw the string. After a pluck it shakes, most at the spot you plucked,
+// and the shaking dies away.
+function drawString() {
+  const { a, b } = string;
+  const age = (performance.now() - string.wobbleAt) / 1000;
+  const amp = string.wobble * Math.exp(-age * 5) * Math.cos(age * 70);
+
+  // The direction straight out from the string, to push the wobble along
+  const len = dist(a, b);
+  const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+
+  ctx.strokeStyle = COLORS.bone;
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  const STEPS = 40;
+  for (let i = 0; i <= STEPS; i++) {
+    const u = i / STEPS;
+    // A bend shaped like a tent, peaking where it was plucked, zero at the ends
+    const w = string.wobbleU ? (u < string.wobbleU ? u / string.wobbleU : (1 - u) / (1 - string.wobbleU)) : 0;
+    const x = a.x + (b.x - a.x) * u + nx * amp * w;
+    const y = a.y + (b.y - a.y) * u + ny * amp * w;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.stroke();
+
+  // The two pegs at the ends
+  ctx.fillStyle = COLORS.hands[0];
+  dot(a, 7);
+  dot(b, 7);
+}
+
+// ── 16. The mouse plays too ──────────────────────────────────
+// The mouse pointer is treated just like a fingertip, so the same pluck
+// code runs for both. Handy for testing without the camera.
+const mouse = { on: false, x: 0, y: 0 };
+
+$('mouse').addEventListener('click', () => {
+  startAudio();
+  mouse.on = true;
+  $('start').classList.add('hidden');
+});
+addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
+// For automated testing only: lets a test feed in made-up hands and pointers.
+window.airStrings = { assignHands, slots, settings, checkPluck, string, mouse, sound: () => ({ audio, master }) };
 
 loop();
 </script>

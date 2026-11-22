@@ -15,8 +15,8 @@ Inspired by Hashem Al-Ghaili's Music Maker, but this is my own version with my o
 
 ## Next step
 
-Test Stage 2: pinch with each hand, then both, and tune the two sliders.
-Then start Stage 3: one string that beeps when a fingertip crosses it.
+Test Stage 3: pluck the string with the mouse, then with a fingertip.
+Then start Stage 4: Karplus-Strong, so the beep sounds like a plucked string.
 
 ## Stages
 
@@ -24,7 +24,7 @@ Then start Stage 3: one string that beeps when a fingertip crosses it.
 | ----- | ------------ | ------ |
 | 1 | Camera on, dots on your fingertips | [stage-1.md](lessons/stage-1.md) |
 | 2 | Detect a pinch | [stage-2.md](lessons/stage-2.md) |
-| 3 | One fixed string that beeps when you cross it | - |
+| 3 | One fixed string that beeps when you cross it | [stage-3.md](lessons/stage-3.md) |
 | 4 | Karplus-Strong, so the beep sounds like a plucked string | - |
 | 5 | Pinch with both hands to create strings | - |
 | 6 | Notes and scales along each string | - |
