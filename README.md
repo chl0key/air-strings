@@ -11,12 +11,13 @@ Pinch with both hands and pull them apart to stretch a string, then sweep a fing
 ## Why?
 
 To learn how hand tracking and browser sound work by building one step by step, with Claude teaching each stage.
-Inspired by Hashem Al-Ghaili's Music Maker, but this is my own version with my own code.
+Goal: everything Hashem Al-Ghaili's Music Maker does, then my own additions on top.
+His repo has no license, so this matches what it does, in my own code, name and look.
 
 ## Next step
 
-Test Stage 3: pluck the string with the mouse, then with a fingertip.
-Then start Stage 4: Karplus-Strong, so the beep sounds like a plucked string.
+Test Stage 4: stretch, drag and delete strings with both hands, and check the pinch feels steady.
+Then Stage 5: notes and scales along each string, plus chord mode.
 
 ## Stages
 
@@ -24,18 +25,25 @@ Then start Stage 4: Karplus-Strong, so the beep sounds like a plucked string.
 | ----- | ------------ | ------ |
 | 1 | Camera on, dots on your fingertips | [stage-1.md](lessons/stage-1.md) |
 | 2 | Detect a pinch | [stage-2.md](lessons/stage-2.md) |
-| 3 | One fixed string that beeps when you cross it | [stage-3.md](lessons/stage-3.md) |
-| 4 | Karplus-Strong, so the beep sounds like a plucked string | - |
-| 5 | Pinch with both hands to create strings | - |
-| 6 | Notes and scales along each string | - |
-| 7+ | My twist: to be decided | - |
+| 3 | One string that beeps when a fingertip crosses it | [stage-3.md](lessons/stage-3.md) |
+| 4 | Precise pinch, pinch jobs, make, drag and delete strings | [stage-4.md](lessons/stage-4.md) |
+| 5 | Notes and scales along each string, longer strings hold more notes, chord mode | - |
+| 6 | Real string sound (Karplus-Strong) and reverb | - |
+| 7 | The string menu: instrument, scale and key, by pointing or pinching | - |
+| 8 | All 24 instruments, drums included | - |
+| 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | - |
+| 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | - |
+| 11 | Beats: 6 patterns, one part at a time, on a steady clock | - |
+| 12 | Looper layers, snap to the grid, "follow chords" | - |
+| 13 | Recording: video or sound, MP4/WebM, MP3, WAV, stems | - |
+| 14 | Saved setups and ready-made layouts | - |
+| 15+ | My additions | - |
 
 ## Notes
 
 - Live at https://chl0key.github.io/air-strings/ (GitHub Pages, from `main`)
-- Each stage arrives on a branch, and I merge it into `main` to put it live
+- Each stage is pushed straight to `main` and goes live about a minute later
 - Reference: https://github.com/Hashem-Al-Ghaili/music-maker
-  - The repo has no license, so we learn from its ideas and write our own code
 - Needs Chrome or Edge, good light, and hands about 40-80 cm from the camera
 - Hand tracking: MediaPipe Hand Landmarker 0.10.14, loaded from a CDN
 - One HTML file, no build step

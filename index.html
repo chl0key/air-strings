@@ -14,7 +14,7 @@
   :root {
     --room:   #1b1524;   /* background: deep plum */
     --wall:   #2a2236;   /* panels */
-    --bone:   #ece4d6;   /* main text */
+    --bone:   #ece4d6;   /* main text, strings */
     --dust:   #a89cb8;   /* quiet text, hand bones */
     --lamp:   #f2a541;   /* hand 1: warm amber */
     --ember:  #e4572e;   /* hand 2: coral red */
@@ -30,7 +30,7 @@
   }
 
   /* The stage fills the window. The camera picture is drawn onto it. */
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
 
   /* The raw <video> is hidden. We only use it as a source of frames. */
   video { display: none; }
@@ -41,20 +41,34 @@
     display: flex; flex-direction: column; justify-content: center;
     padding: 0 max(16px, 8vw);
     gap: 20px;
+    background: var(--room);
   }
   #start h1 { margin: 0; font-size: clamp(48px, 9vw, 112px); font-weight: 800; line-height: 0.95; letter-spacing: -0.02em; }
   #start p  { margin: 0; max-width: 34em; font-size: 18px; line-height: 1.5; color: var(--dust); }
-  #start button {
-    align-self: flex-start;
+  button {
     font: inherit; font-size: 18px; font-weight: 600;
     color: var(--room); background: var(--lamp);
     border: 0; border-radius: 999px; padding: 14px 28px; cursor: pointer;
   }
-  #start button:disabled { opacity: 0.6; cursor: wait; }
+  button:disabled { opacity: 0.6; cursor: wait; }
+  button.quiet { background: transparent; color: var(--bone); box-shadow: inset 0 0 0 2px var(--dust); }
   #start .buttons { display: flex; flex-wrap: wrap; gap: 12px; }
-  #start button.quiet { background: transparent; color: var(--bone); box-shadow: inset 0 0 0 2px var(--dust); }
   #status { min-height: 1.5em; color: var(--lamp); font-size: 16px; }
   .hidden { display: none !important; }
+
+  /* Top bar: the one button we need so far */
+  #bar { position: fixed; top: 16px; right: 16px; display: flex; gap: 8px; }
+  #bar button { font-size: 15px; padding: 9px 18px; background: color-mix(in srgb, var(--wall) 88%, transparent); color: var(--bone); }
+
+  /* A short message that appears in the middle of the top edge, then fades */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    max-width: calc(100vw - 32px);
+    background: var(--wall); color: var(--bone);
+    padding: 10px 18px; border-radius: 999px; font-size: 16px;
+    opacity: 0; transition: opacity 0.25s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
 
   /* Panel in the corner: what the tracker sees, and the pinch controls */
   #panel {
@@ -86,13 +100,16 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 3: sweep your index fingertip across the string to play it. Sound on. The faster you sweep, the louder it plays.</p>
+  <p>Stage 4: pinch with both hands and pull them apart to stretch a new string. Pinch a peg to move it. Push the two pegs together to delete a string. Sweep a fingertip across any string to play it.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
   </div>
   <div id="status"></div>
 </section>
+
+<div id="bar" class="hidden"><button id="clear">Clear strings</button></div>
+<div id="toast"></div>
 
 <div id="panel" class="hidden">
   <div id="fps">Hands: 0</div>
@@ -104,18 +121,18 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 3: one string, one sound
+//  AIR STRINGS · Stage 4: a precise pinch, and strings you make
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
-//    • Sound, made by the browser's built-in sound engine (section 13)
-//    • One fixed string across the screen (section 14)
-//    • Pluck detection: a fingertip crossing the string plays it (section 15)
-//    • The mouse can play too, so you can test without the camera (section 16)
+//    • Smoothing that adapts to speed: steady when you aim, quick when
+//      you swing (section 8)
+//    • A pinch knows what it's aimed at: a peg, or empty air (section 10)
+//    • Make strings with two hands, drag pegs, delete short strings (sections 10-11)
+//    • Every string can be plucked, and pinches don't pluck by accident (section 13)
 //
-//  From Stage 2:
-//    • Each hand keeps its own slot (section 7), smoothing (section 8)
-//    • Pinch detection (section 9)
+//  From earlier stages:
+//    • Hand slots (7), pinch detection (9), sound (12)
 
 // ── 1. Where the hand tracker comes from ─────────────────────
 const MEDIAPIPE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
@@ -127,11 +144,10 @@ const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmar
 //    5-8   = index    (5 is the knuckle, 8 is the tip)
 //    9-12  = middle   (9 is the knuckle, 12 is the tip)
 //    13-16 = ring     (16 is the tip)
-//    17-20 = pinky    (20 is the tip)
+//    17-20 = pinky    (17 is the knuckle, 20 is the tip)
 const WRIST = 0, THUMB_TIP = 4, INDEX_KNUCKLE = 5, INDEX_TIP = 8, MIDDLE_KNUCKLE = 9, PINKY_KNUCKLE = 17;
-// On a flat, facing hand the palm is about 1.4 times as long as it is wide
-const PALM_WIDTH_SCALE = 1.4;
 const FINGERTIPS = [4, 8, 12, 16, 20];
+const PALM_WIDTH_SCALE = 1.4;   // a flat, facing palm is about 1.4 times as long as it is wide
 
 const BONES = [
   [0, 1], [1, 2], [2, 3], [3, 4],          // thumb
@@ -144,31 +160,47 @@ const BONES = [
 
 // ── 3. Settings you can tune ─────────────────────────────────
 const settings = {
-  // A real pinch reads about 0.10-0.17. A relaxed hand, thumb resting
-  // beside the index finger, reads about 0.34. These sit in between.
-  closeAt: 0.22,     // the pinch closes when the ratio is smaller than this
-  openAt:  0.32,     // it opens again when the ratio is bigger than this
-  holdFrames: 2,     // a change must last this many frames in a row to count
-  smoothing: 0.5,    // 0 = frozen, 1 = no smoothing at all
+  // Pinch: a firm pinch reads about 0.10-0.17, a relaxed hand about 0.34
+  closeAt: 0.22,       // the pinch closes when the ratio drops below this
+  openAt:  0.32,       // and opens again when it rises above this
+  holdFrames: 2,       // a change must last this many frames in a row
+
+  // Smoothing (section 8)
+  steadyCutoff: 1.2,   // how much a still hand is smoothed: lower = steadier, but laggier
+  speedBoost: 0.015,   // how fast smoothing lets go as the hand speeds up
+
+  // Strings
+  grabRadius: 40,      // pixels: how close a pinch must be to a peg to grab it
+  minLength: 110,      // pixels: shorter than this, a new string isn't made
+  deleteBelow: 60,     // pixels: drag the pegs closer than this and the string is deleted
+  maxStrings: 12,
+  pluckPause: 0.25,    // seconds after letting go of a pinch before that hand can pluck
 };
 
-// ── 4. Grab the page elements we need ────────────────────────
+// ── 4. Page elements and small helpers ───────────────────────
 const $ = id => document.getElementById(id);
 const video = $('cam'), canvas = $('stage'), ctx = canvas.getContext('2d');
 
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const COLORS = { room: css('--room'), bone: css('--bone'), dust: css('--dust'), hands: [css('--lamp'), css('--ember')] };
 
+const dist  = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
+const mid   = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+const lerp  = (a, b, k) => a + (b - a) * k;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const seconds = () => performance.now() / 1000;
+
 let tracker = null;
 let lastVideoTime = -1;
+let started = false;
 
-// Two slots, one per hand. A slot is empty (null) when that hand isn't in view.
-const slots = [null, null];
-
-// Small helpers
-const dist = (p, q) => Math.hypot(p.x - q.x, p.y - q.y);
-const mid  = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove('show'), 2600);
+}
 
 // ── 5. Keep the canvas the same size as the window ───────────
 function resize() {
@@ -180,10 +212,17 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
-// ── 6. Start: camera first, then the tracker ─────────────────
+// ── 6. Start: camera, or the mouse ───────────────────────────
+function begin() {
+  started = true;
+  $('start').classList.add('hidden');
+  $('bar').classList.remove('hidden');
+  if (!strings.length) addString({ x: innerWidth * 0.3, y: innerHeight * 0.62 }, { x: innerWidth * 0.7, y: innerHeight * 0.45 });
+}
+
 $('go').addEventListener('click', async () => {
   $('go').disabled = true;
-  startAudio();   // browsers only allow sound to start from a click, so we start it here
+  startAudio();   // browsers only allow sound to start from a click
   try {
     $('status').textContent = 'Waiting for camera permission…';
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -195,9 +234,8 @@ $('go').addEventListener('click', async () => {
 
     $('status').textContent = 'Loading the hand tracker…';
     tracker = await loadTracker();
-
-    $('start').classList.add('hidden');
     $('panel').classList.remove('hidden');
+    begin();
   } catch (err) {
     console.error(err);
     $('status').textContent = err.name === 'NotAllowedError'
@@ -238,115 +276,322 @@ function toScreen(p, fit) {
 }
 
 // ── 7. Keep each hand in its own slot ────────────────────────
-// MediaPipe lists the hands it finds, but the order can change from one
-// frame to the next. That's what made the colors swap in Stage 1.
-//
-// The fix: remember where each hand's wrist was last frame. Each new hand
-// goes to the slot whose wrist was closest. A hand with no close match
-// takes an empty slot. A slot that goes unmatched for a moment is cleared.
+// MediaPipe's list of hands can change order between frames. Each new
+// reading goes to the slot whose wrist was closest last frame.
 const MAX_JUMP = 300;     // pixels: further than this, it's not the same hand
-const LOST_AFTER = 0.25;  // seconds: how long a hand can vanish before its slot clears
+const LOST_AFTER = 0.25;  // seconds before a vanished hand's slot clears
+
+const slots = [null, null];
 
 function assignHands(found, now) {
   const used = new Set();
   const matched = [null, null];
 
-  // Every possible pairing of (new hand, slot), closest first
   const pairs = [];
   found.forEach((pts, i) => slots.forEach((slot, j) => {
-    if (slot) pairs.push({ i, j, d: dist(pts[WRIST], slot.pts[WRIST]) });
+    if (slot) pairs.push({ i, j, d: dist(pts[WRIST], slot.raw[WRIST]) });
   }));
   pairs.sort((a, b) => a.d - b.d);
-
   for (const { i, j, d } of pairs) {
     if (used.has(i) || matched[j] || d > MAX_JUMP) continue;
     matched[j] = found[i];
     used.add(i);
   }
 
-  // Hands with no match go into an empty slot, if there is one
   found.forEach((pts, i) => {
     if (used.has(i)) return;
     const empty = [0, 1].find(j => !slots[j] && !matched[j]);
     if (empty === undefined) return;
-    slots[empty] = newHand(pts);
+    slots[empty] = newHand();
     matched[empty] = pts;
     used.add(i);
   });
 
-  // Update matched slots. Clear the ones that have been missing too long.
   for (let j = 0; j < 2; j++) {
-    if (matched[j]) updateHand(slots[j], matched[j], now);
-    else if (slots[j] && now - slots[j].seen > LOST_AFTER) slots[j] = null;
+    if (matched[j]) updateHand(j, matched[j], now);
+    else if (slots[j] && now - slots[j].seen > LOST_AFTER) loseHand(j, now);
   }
 }
 
-function newHand(pts) {
+function newHand() {
   return {
-    pts: pts.map(p => ({ ...p })),   // smoothed points
-    seen: 0,                         // when we last saw it
-    ratio: 1,                        // pinch gap ÷ hand size
-    pinched: false,                  // is the pinch closed right now?
-    streak: 0,                       // frames in a row that disagree with "pinched"
-    at: { x: 0, y: 0 },              // the pinch point: halfway between thumb and index tips
-    flash: 0,                        // when the pinch last changed, for the burst animation
+    raw: null,                 // the latest points, straight from the tracker
+    pts: null,                 // the smoothed points we actually use
+    filters: Array.from({ length: 21 }, () => ({ x: new Smoother(), y: new Smoother() })),
+    seen: 0,
+    ratio: 1, pinched: false, streak: 0, flash: 0,
+    at: { x: 0, y: 0 },        // the pinch point, halfway between thumb and index tips
+    released: -9,              // when this hand last let go of a pinch
   };
 }
 
-// ── 8. Smoothing ─────────────────────────────────────────────
-// The tracker's points wobble by a few pixels every frame, even when your
-// hand is still. Moving each point only part of the way to its new spot
-// calms the wobble. The cost is a little lag.
-function updateHand(h, pts, now) {
-  const k = settings.smoothing;
-  for (let i = 0; i < 21; i++) {
-    h.pts[i].x += k * (pts[i].x - h.pts[i].x);
-    h.pts[i].y += k * (pts[i].y - h.pts[i].y);
+function loseHand(j, now) {
+  if (slots[j].pinched) pinchEnd('hand' + j, now, true);
+  slots[j] = null;
+}
+
+// ── 8. Smoothing that adapts to speed ────────────────────────
+// Stage 2 smoothed every point by the same amount all the time. That's a
+// trade: smooth a lot and fast moves lag behind; smooth a little and a
+// still hand shakes.
+//
+// This smoother changes its mind every frame. It measures how fast the
+// point is moving. Still or slow: heavy smoothing, so a pinch point you're
+// aiming holds steady. Fast: almost none, so a swing keeps up.
+//
+// The idea is called the "One Euro Filter" (Casiez, Roussel and Vogel, 2012).
+// "Cutoff" is in vibrations per second: wobble faster than the cutoff is
+// smoothed away, movement slower than it passes through.
+class Smoother {
+  filter(value, t) {
+    if (this.t === undefined) { this.t = t; this.value = value; this.speed = 0; return value; }
+    const dt = Math.max(t - this.t, 1 / 240);
+    this.t = t;
+    // How fast is it moving? (The speed is itself lightly smoothed.)
+    const rawSpeed = (value - this.value) / dt;
+    this.speed += Smoother.blend(1, dt) * (rawSpeed - this.speed);
+    // Faster movement → higher cutoff → less smoothing
+    const cutoff = settings.steadyCutoff + settings.speedBoost * Math.abs(this.speed);
+    this.value += Smoother.blend(cutoff, dt) * (value - this.value);
+    return this.value;
   }
+  // How far to move toward the new value this frame, from 0 (not at all) to 1 (all the way)
+  static blend(cutoff, dt) {
+    const tau = 1 / (2 * Math.PI * cutoff);
+    return 1 / (1 + tau / dt);
+  }
+}
+
+function updateHand(j, pts, now) {
+  const h = slots[j];
+  h.raw = pts;
+  h.pts = pts.map((p, i) => ({ x: h.filters[i].x.filter(p.x, now), y: h.filters[i].y.filter(p.y, now) }));
   h.seen = now;
-  updatePinch(h);
+  updatePinch(j, h, now);
 }
 
 // ── 9. Pinch detection ───────────────────────────────────────
-// The gap between thumb tip and index tip, in pixels, changes as you move
-// closer to the camera or further away. So we divide it by the size of the
-// hand. That ratio stays about the same at any distance, so the same
-// settings work whether you lean in or sit back.
-//
-// Hand size is the bigger of two measures of the palm: its length (wrist
-// to middle knuckle) and its width (index knuckle to pinky knuckle, scaled
-// up to match). Tilt your palm forward and the length looks shorter to the
-// camera. Turn it sideways and the width does. They rarely both shrink at once.
-//
-// Two thresholds, not one: the pinch closes below closeAt and only opens
-// again above openAt. In between, nothing changes. With a single threshold,
-// a gap that hovers right on the line would flicker on and off.
-//
-// And a change has to last holdFrames frames in a row, to ignore a
-// one-frame glitch from the tracker.
-function updatePinch(h) {
+// Thumb-to-index gap ÷ hand size, so it works at any distance.
+// Two thresholds so it can't flicker, and a change must last holdFrames.
+function updatePinch(j, h, now) {
   const p = h.pts;
   const palmLength = dist(p[WRIST], p[MIDDLE_KNUCKLE]);
   const palmWidth = dist(p[INDEX_KNUCKLE], p[PINKY_KNUCKLE]) * PALM_WIDTH_SCALE;
-  const handSize = Math.max(palmLength, palmWidth, 1);
-  h.ratio = dist(p[THUMB_TIP], p[INDEX_TIP]) / handSize;
+  h.ratio = dist(p[THUMB_TIP], p[INDEX_TIP]) / Math.max(palmLength, palmWidth, 1);
   h.at = mid(p[THUMB_TIP], p[INDEX_TIP]);
 
   const wantsChange = h.pinched ? h.ratio > settings.openAt : h.ratio < settings.closeAt;
   h.streak = wantsChange ? h.streak + 1 : 0;
-  if (h.streak >= settings.holdFrames) {
-    h.pinched = !h.pinched;
-    h.streak = 0;
-    h.flash = performance.now();
+  if (h.streak < settings.holdFrames) return;
+  h.streak = 0;
+  h.pinched = !h.pinched;
+  h.flash = performance.now();
+  if (h.pinched) pinchStart('hand' + j, h.at, now);
+  else { pinchEnd('hand' + j, now); h.released = now; }
+}
+
+// ── 10. What a pinch is aimed at ─────────────────────────────
+// The moment a pinch closes, we look at what's under it and decide what
+// this pinch is for. It keeps that job until it lets go.
+//
+//   near a peg     → 'drag': the peg follows the pinch
+//   anywhere else  → 'free': on its own it does nothing yet. Two free
+//                    pinches at once become 'make': a new string between them.
+//
+// Later stages add more targets: the middle of a string (menu), the
+// string itself (bend), and empty air with one hand (effects).
+//
+// "who" names the pincher: 'hand0', 'hand1' or 'mouse'.
+const grabs = {};          // who → { job, ... }
+let preview = null;        // { a, b } while a new string is being stretched
+
+function pointOf(who) {
+  if (who === 'mouse') return { x: mouse.x, y: mouse.y };
+  const h = slots[+who.slice(4)];
+  return h ? h.at : null;
+}
+
+function pinchStart(who, p, now) {
+  const peg = nearestPeg(p, settings.grabRadius);
+  if (peg) grabs[who] = { job: 'drag', s: peg.s, end: peg.end };
+  else grabs[who] = { job: 'free', from: { ...p } };
+}
+
+// Runs every frame: move whatever each pinch is holding
+function updateGrabs() {
+  for (const who in grabs) {
+    const g = grabs[who], p = pointOf(who);
+    if (!p) continue;
+    if (g.job === 'drag') g.s[g.end] = { ...p };
+  }
+
+  // Both hands pinching free air: they're stretching a new string
+  const g0 = grabs.hand0, g1 = grabs.hand1;
+  if (g0 && g1 && (g0.job === 'free' || g0.job === 'make') && (g1.job === 'free' || g1.job === 'make')) {
+    g0.job = g1.job = 'make';
+    preview = { a: pointOf('hand0'), b: pointOf('hand1') };
+  }
+  // The mouse has only one "hand", so it stretches a string from where it pressed
+  const gm = grabs.mouse;
+  if (gm && (gm.job === 'free' || gm.job === 'make') && dist(gm.from, mouse) > 12) {
+    gm.job = 'make';
+    preview = { a: gm.from, b: { x: mouse.x, y: mouse.y } };
   }
 }
 
-// ── 10. The loop ─────────────────────────────────────────────
+// lost = the hand left the camera's view mid-pinch, so don't act on it
+function pinchEnd(who, now, lost) {
+  const g = grabs[who];
+  delete grabs[who];
+  if (!g) return;
+
+  if (g.job === 'make') {
+    const pv = preview;
+    preview = null;
+    // The other hand was stretching the same string: it's done too
+    for (const other in grabs) if (grabs[other].job === 'make') grabs[other].job = 'used';
+    if (!pv || lost) return;
+    if (dist(pv.a, pv.b) >= settings.minLength) addString(pv.a, pv.b);
+    else toast('Pull further apart to make a string');
+  }
+
+  if (g.job === 'drag' && strings.includes(g.s)) {
+    if (dist(g.s.a, g.s.b) < settings.deleteBelow) removeString(g.s);
+  }
+}
+
+// ── 11. The strings ──────────────────────────────────────────
+// Each string is two pegs (a and b) plus what it needs to remember:
+// when it was made, its wobble, and where each pointer was last time.
+const strings = [];
+const bursts = [];         // expanding rings, for when strings appear and vanish
+
+function addString(a, b) {
+  if (strings.length >= settings.maxStrings) { toast(`${settings.maxStrings} strings is the limit. Delete one first.`); return null; }
+  const s = { a: { ...a }, b: { ...b }, born: seconds(), wobble: 0, wobbleAt: 0, wobbleU: 0.5, plucks: 0, mem: {} };
+  strings.push(s);
+  bursts.push({ ...mid(a, b), t: performance.now(), color: COLORS.bone });
+  return s;
+}
+
+function removeString(s) {
+  const i = strings.indexOf(s);
+  if (i < 0) return;
+  strings.splice(i, 1);
+  bursts.push({ ...mid(s.a, s.b), t: performance.now(), color: COLORS.hands[1] });
+}
+
+function nearestPeg(p, radius) {
+  let best = null;
+  for (const s of strings) for (const end of ['a', 'b']) {
+    const d = dist(p, s[end]);
+    if (d < radius && (!best || d < best.d)) best = { s, end, d };
+  }
+  return best;
+}
+
+$('clear').addEventListener('click', () => { [...strings].forEach(removeString); });
+
+// ── 12. Sound ────────────────────────────────────────────────
+//   oscillator ──► gain (volume shape) ──► master gain ──► speakers
+let audio = null, master = null;
+
+function startAudio() {
+  if (!audio) {
+    audio = new AudioContext({ latencyHint: 'interactive' });
+    master = audio.createGain();
+    master.gain.value = 0.6;
+    master.connect(audio.destination);
+  }
+  if (audio.state !== 'running') audio.resume();
+}
+
+function beep(loudness) {
+  if (!audio) return;
+  const t = audio.currentTime;
+  const osc = audio.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.value = 330;
+  const env = audio.createGain();
+  env.gain.setValueAtTime(0, t);
+  env.gain.linearRampToValueAtTime(loudness, t + 0.005);
+  env.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+  osc.connect(env);
+  env.connect(master);
+  osc.start(t);
+  osc.stop(t + 0.85);
+}
+
+// ── 13. Plucking ─────────────────────────────────────────────
+// Same idea as Stage 3, now for every string: the cross product says
+// which side of a string a pointer is on, and switching sides is a pluck.
+const DEAD_BAND = 6;      // pixels either side of a string that count as neither side
+const COOLDOWN = 0.1;     // seconds between plucks of one string by one pointer
+const FORGET_AFTER = 0.4; // seconds: a pointer unseen for longer starts fresh
+const NEW_STRING_QUIET = 0.4;   // seconds: a brand-new string can't be plucked yet (your hands are on it)
+
+function sideOf(s, p) {
+  const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+  return (dx * (p.y - s.a.y) - dy * (p.x - s.a.x)) / Math.hypot(dx, dy);
+}
+function alongOf(s, p) {
+  const dx = s.b.x - s.a.x, dy = s.b.y - s.a.y;
+  return ((p.x - s.a.x) * dx + (p.y - s.a.y) * dy) / (dx * dx + dy * dy);
+}
+
+function checkPluck(id, p, now) {
+  for (const s of strings) {
+    if (dist(s.a, s.b) < 1) continue;
+    const d = sideOf(s, p);
+    let mem = s.mem[id];
+    if (!mem || now - mem.seen > FORGET_AFTER) mem = s.mem[id] = { side: 0, at: { ...p }, atTime: now, seen: now, last: 0 };
+    mem.seen = now;
+    if (Math.abs(d) < DEAD_BAND) continue;
+    const side = Math.sign(d);
+
+    if (mem.side && side !== mem.side && now - mem.last > COOLDOWN && now - s.born > NEW_STRING_QUIET) {
+      const dOld = sideOf(s, mem.at);
+      const k = dOld / (dOld - d);
+      const u = alongOf(s, { x: lerp(mem.at.x, p.x, k), y: lerp(mem.at.y, p.y, k) });
+      if (u >= 0 && u <= 1) {
+        const speed = dist(p, mem.at) / Math.max(now - mem.atTime, 0.008);
+        pluck(s, u, clamp(0.25 + speed / 3000, 0.25, 1));
+        mem.last = now;
+      }
+    }
+    mem.side = side;
+    mem.at = { ...p };
+    mem.atTime = now;
+  }
+}
+
+function pluck(s, u, loudness) {
+  beep(loudness);
+  s.wobble = 6 + 18 * loudness;
+  s.wobbleAt = performance.now();
+  s.wobbleU = clamp(u, 0.1, 0.9);
+  s.plucks++;
+}
+
+// Which pointers may pluck right now?
+//   • an open hand's index fingertip, if the hand isn't pinching, is
+//     clearly open (not halfway into a pinch), and didn't just let go of one
+//   • the mouse, while no button is pressed
+function plucking(now) {
+  slots.forEach((h, j) => {
+    if (!h || h.pinched || grabs['hand' + j]) return;
+    if (h.ratio < settings.openAt || now - h.released < settings.pluckPause) return;
+    checkPluck('hand' + j, h.pts[INDEX_TIP], now);
+  });
+  if (mouse.on && !mouse.down) checkPluck('mouse', mouse, now);
+}
+
+// ── 14. The loop ─────────────────────────────────────────────
 let fps = 0, frames = 0, fpsClock = performance.now();
 
 function loop() {
   requestAnimationFrame(loop);
-  const now = performance.now() / 1000;
+  const now = seconds();
 
   if (tracker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
@@ -354,16 +599,10 @@ function loop() {
     const fit = videoFit();
     assignHands(result.landmarks.map(points => points.map(p => toScreen(p, fit))), now);
     frames++;
-
-    // Each open hand's index fingertip can pluck. A pinching hand can't,
-    // so making a pinch near the string won't play it by accident.
-    slots.forEach((h, j) => {
-      if (h && !h.pinched) checkPluck('hand' + j, h.pts[INDEX_TIP], now);
-    });
   }
 
-  if (mouse.on) checkPluck('mouse', mouse, now);
-
+  updateGrabs();
+  plucking(now);
   draw();
   updatePanel();
 
@@ -374,7 +613,7 @@ function loop() {
   }
 }
 
-// ── 11. Drawing ──────────────────────────────────────────────
+// ── 15. Drawing ──────────────────────────────────────────────
 function draw() {
   ctx.fillStyle = COLORS.room;
   ctx.fillRect(0, 0, innerWidth, innerHeight);
@@ -388,60 +627,124 @@ function draw() {
     ctx.drawImage(video, fit.ox, fit.oy, fit.vw * fit.scale, fit.vh * fit.scale);
     ctx.restore();
   }
+  if (!started) return;
 
-  if (tracker || mouse.on) drawString();   // not behind the start screen
+  for (const s of strings) drawString(s);
+  drawPreview();
+  drawBursts();
+  slots.forEach((h, i) => h && drawHand(h, i));
+  if (mouse.on) drawAim({ x: mouse.x, y: mouse.y }, COLORS.hands[0], mouse.down);
+}
 
-  // Both hands pinching: draw a line between the two pinch points.
-  // In Stage 5 this line becomes a string you can keep.
-  const [a, b] = slots;
-  if (a && b && a.pinched && b.pinched) {
-    ctx.strokeStyle = COLORS.bone;
-    ctx.lineWidth = 3;
-    ctx.setLineDash([10, 10]);
-    ctx.lineDashOffset = -performance.now() / 30;   // the dashes crawl along the line
-    ctx.beginPath();
-    ctx.moveTo(a.at.x, a.at.y);
-    ctx.lineTo(b.at.x, b.at.y);
-    ctx.stroke();
-    ctx.setLineDash([]);
+// A string shakes after a pluck, most at the spot you plucked, and settles
+function drawString(s) {
+  const { a, b } = s;
+  const age = (performance.now() - s.wobbleAt) / 1000;
+  const amp = s.wobble * Math.exp(-age * 5) * Math.cos(age * 70);
+  const len = Math.max(dist(a, b), 1);
+  const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;   // straight out from the string
+
+  // A string being dragged shorter than deleteBelow turns red: let go to delete
+  const doomed = len < settings.deleteBelow;
+  ctx.strokeStyle = doomed ? COLORS.hands[1] : COLORS.bone;
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  const STEPS = 40;
+  for (let i = 0; i <= STEPS; i++) {
+    const u = i / STEPS;
+    const w = u < s.wobbleU ? u / s.wobbleU : (1 - u) / (1 - s.wobbleU);   // tent shape
+    const x = lerp(a.x, b.x, u) + nx * amp * w;
+    const y = lerp(a.y, b.y, u) + ny * amp * w;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   }
+  ctx.stroke();
 
-  slots.forEach((h, i) => {
-    if (!h) return;
-    const color = COLORS.hands[i];
-    const p = h.pts;
+  ctx.fillStyle = doomed ? COLORS.hands[1] : COLORS.hands[0];
+  dot(a, 7);
+  dot(b, 7);
+}
 
-    ctx.strokeStyle = COLORS.dust;
-    ctx.globalAlpha = 0.5;
+// The dashed line while a new string is being stretched.
+// Dim while it's too short to keep, bright once it's long enough.
+function drawPreview() {
+  if (!preview) return;
+  const long = dist(preview.a, preview.b) >= settings.minLength;
+  ctx.strokeStyle = long ? COLORS.bone : COLORS.dust;
+  ctx.globalAlpha = long ? 1 : 0.6;
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 10]);
+  ctx.lineDashOffset = -performance.now() / 30;
+  ctx.beginPath();
+  ctx.moveTo(preview.a.x, preview.a.y);
+  ctx.lineTo(preview.b.x, preview.b.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+}
+
+function drawBursts() {
+  const t = performance.now();
+  for (let i = bursts.length - 1; i >= 0; i--) {
+    const k = (t - bursts[i].t) / 500;
+    if (k >= 1) { bursts.splice(i, 1); continue; }
+    ctx.strokeStyle = bursts[i].color;
+    ctx.globalAlpha = 1 - k;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(bursts[i].x, bursts[i].y, 10 + k * 70, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHand(h, i) {
+  const color = COLORS.hands[i];
+  const p = h.pts;
+
+  ctx.strokeStyle = COLORS.dust;
+  ctx.globalAlpha = 0.45;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (const [m, n] of BONES) { ctx.moveTo(p[m].x, p[m].y); ctx.lineTo(p[n].x, p[n].y); }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  ctx.fillStyle = COLORS.dust;
+  for (const q of p) dot(q, 2.5);
+  ctx.fillStyle = color;
+  for (const k of FINGERTIPS) dot(p[k], k === INDEX_TIP ? 9 : 6);   // the index tip plucks, so it's biggest
+
+  drawAim(h.at, color, h.pinched, h.flash);
+}
+
+// The pinch point. When it's near a peg, the peg gets a ring, so you can
+// see what a pinch would grab before you close it.
+function drawAim(p, color, closed, flash = 0) {
+  const peg = !closed && nearestPeg(p, settings.grabRadius);
+  if (peg) {
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    for (const [m, n] of BONES) { ctx.moveTo(p[m].x, p[m].y); ctx.lineTo(p[n].x, p[n].y); }
+    ctx.arc(peg.s[peg.end].x, peg.s[peg.end].y, 16, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = closed ? 6 : 2;
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, closed ? 14 : 20, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const age = (performance.now() - flash) / 300;
+  if (age < 1) {
+    ctx.globalAlpha = 1 - age;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 14 + age * 36, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 1;
-
-    ctx.fillStyle = COLORS.dust;
-    for (const q of p) dot(q, 3);
-    ctx.fillStyle = color;
-    for (const k of FINGERTIPS) dot(p[k], 8);
-
-    // The pinch point: a thin outline when open, a thick ring when closed
-    ctx.strokeStyle = color;
-    ctx.lineWidth = h.pinched ? 6 : 2;
-    ctx.beginPath();
-    ctx.arc(h.at.x, h.at.y, h.pinched ? 16 : 22, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // A short burst the moment a pinch closes or opens
-    const age = (performance.now() - h.flash) / 300;
-    if (age < 1) {
-      ctx.globalAlpha = 1 - age;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(h.at.x, h.at.y, 16 + age * 40, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-  });
+  }
 }
 
 function dot(p, r) {
@@ -450,8 +753,8 @@ function dot(p, r) {
   ctx.fill();
 }
 
-// ── 12. The panel: live pinch numbers and the two sliders ────
-const METER_MAX = 1.2;   // the meter's right edge stands for a ratio of 1.2
+// ── 16. The panel: live pinch numbers and the two sliders ────
+const METER_MAX = 1.2;
 const pct = v => clamp(v / METER_MAX, 0, 1) * 100 + '%';
 
 function updatePanel() {
@@ -467,7 +770,6 @@ function updatePanel() {
   });
 }
 
-// The sliders change the thresholds while you play, so you can tune them to your hands.
 function showSettings() {
   for (const k of ['closeAt', 'openAt']) {
     $(k).value = settings[k];
@@ -477,7 +779,6 @@ function showSettings() {
 for (const key of ['closeAt', 'openAt']) {
   $(key).addEventListener('input', () => {
     settings[key] = +$(key).value;
-    // "Opens above" must stay higher than "closes below", or a pinch could never let go
     if (settings.openAt < settings.closeAt + 0.05) {
       if (key === 'closeAt') settings.openAt = settings.closeAt + 0.05;
       else settings.closeAt = settings.openAt - 0.05;
@@ -487,188 +788,32 @@ for (const key of ['closeAt', 'openAt']) {
 }
 showSettings();
 
-// ── 13. Sound ────────────────────────────────────────────────
-// The Web Audio API is a sound studio built into the browser. You create
-// sound sources (like an oscillator, which makes a steady tone), pass them
-// through effects (like a volume knob, called a "gain"), and connect the
-// last one to the speakers ("destination").
-//
-//   oscillator ──► gain (volume shape) ──► master gain ──► speakers
-//
-// Everything is timed against the audio clock (audio.currentTime), which is
-// far steadier than the screen's clock.
-let audio = null;
-let master = null;
-
-function startAudio() {
-  if (!audio) {
-    audio = new AudioContext({ latencyHint: 'interactive' });   // "interactive" = lowest delay
-    master = audio.createGain();
-    master.gain.value = 0.6;
-    master.connect(audio.destination);
-  }
-  if (audio.state !== 'running') audio.resume();
-}
-
-// One beep. Loudness runs from 0 to 1.
-// The volume shape, called an envelope, is what makes it sound plucked:
-// a very fast rise, then a fade that slows down as it goes.
-function beep(loudness) {
-  if (!audio) return;
-  const t = audio.currentTime;
-
-  const osc = audio.createOscillator();
-  osc.type = 'triangle';           // softer than 'square', brighter than 'sine'
-  osc.frequency.value = 330;       // the note E4, in vibrations per second
-
-  const env = audio.createGain();
-  env.gain.setValueAtTime(0, t);
-  env.gain.linearRampToValueAtTime(loudness, t + 0.005);       // up in 5 ms
-  env.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);      // down over 0.8 s
-
-  osc.connect(env);
-  env.connect(master);
-  osc.start(t);
-  osc.stop(t + 0.85);    // the browser tidies the oscillator away after it stops
-}
-
-// ── 14. The string ───────────────────────────────────────────
-// For now there's one string, fixed in place. Its ends are stored as
-// fractions of the window, so it stays put when the window is resized.
-// It slopes on purpose: the pluck maths has to work at any angle.
-const STRING = { a: { x: 0.25, y: 0.62 }, b: { x: 0.75, y: 0.42 } };
-const string = {
-  a: { x: 0, y: 0 }, b: { x: 0, y: 0 },
-  wobble: 0, wobbleAt: 0, plucks: 0,   // for the vibration you see after a pluck
-};
-function placeString() {
-  string.a = { x: STRING.a.x * innerWidth, y: STRING.a.y * innerHeight };
-  string.b = { x: STRING.b.x * innerWidth, y: STRING.b.y * innerHeight };
-}
-addEventListener('resize', placeString);
-placeString();
-
-// ── 15. Pluck detection ──────────────────────────────────────
-// Which side of the string is a point on? The cross product answers it.
-//
-// Take the string as an arrow from end a to end b, and a second arrow from
-// a to the point. The cross product of the two arrows is positive when the
-// point is on one side, negative on the other, and zero on the line.
-// Divide it by the string's length and you also get the distance from the
-// line, in pixels.
-//
-// A pluck is a fingertip that was on one side and is now on the other.
-//
-// Three guards stop false plucks:
-//   • DEAD_BAND: within a few pixels of the line, a point counts as on
-//     neither side. Tracker wobble can't flip it back and forth.
-//   • The crossing has to happen between the two ends, not beyond them.
-//   • COOLDOWN: one pointer can't pluck again straight away.
-const DEAD_BAND = 6;      // pixels either side of the line
-const COOLDOWN = 0.1;     // seconds between plucks from the same pointer
-const FORGET_AFTER = 0.4; // seconds: a pointer unseen for longer starts fresh
-
-const pointers = {};      // what we remember about each pointer, by name
-
-function sideOf(p) {
-  const { a, b } = string;
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
-  const cross = dx * (p.y - a.y) - dy * (p.x - a.x);
-  return cross / len;     // + on one side, - on the other, size = distance in pixels
-}
-
-// How far along the string a point sits: 0 at end a, 1 at end b
-function alongOf(p) {
-  const { a, b } = string;
-  const dx = b.x - a.x, dy = b.y - a.y;
-  return ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy);
-}
-
-function checkPluck(id, p, now) {
-  const d = sideOf(p);
-  let mem = pointers[id];
-  if (!mem || now - mem.seen > FORGET_AFTER) mem = pointers[id] = { side: 0, at: { ...p }, atTime: now, seen: now, lastPluck: 0 };
-
-  // Inside the dead band: remember that we saw it, but don't change its side
-  if (Math.abs(d) < DEAD_BAND) { mem.seen = now; return; }
-  const side = Math.sign(d);
-
-  if (mem.side && side !== mem.side && now - mem.lastPluck > COOLDOWN) {
-    // Where did it cross? Slide along the move from the old point to the new
-    // one, to the spot where the distance passed through zero.
-    const dOld = sideOf(mem.at);
-    const k = dOld / (dOld - d);
-    const crossing = { x: mem.at.x + k * (p.x - mem.at.x), y: mem.at.y + k * (p.y - mem.at.y) };
-    const u = alongOf(crossing);
-
-    if (u >= 0 && u <= 1) {
-      // Faster sweeps play louder: pixels per second, scaled into 0.25-1
-      const speed = dist(p, mem.at) / Math.max(now - mem.atTime, 0.008);
-      pluck(u, clamp(0.25 + speed / 3000, 0.25, 1));
-      mem.lastPluck = now;
-    }
-  }
-  mem.side = side;
-  mem.at = { ...p };
-  mem.atTime = now;
-  mem.seen = now;
-}
-
-function pluck(u, loudness) {
-  beep(loudness);
-  string.wobble = 6 + 18 * loudness;
-  string.wobbleAt = performance.now();
-  string.wobbleU = clamp(u, 0.1, 0.9);
-  string.plucks++;
-}
-
-// Draw the string. After a pluck it shakes, most at the spot you plucked,
-// and the shaking dies away.
-function drawString() {
-  const { a, b } = string;
-  const age = (performance.now() - string.wobbleAt) / 1000;
-  const amp = string.wobble * Math.exp(-age * 5) * Math.cos(age * 70);
-
-  // The direction straight out from the string, to push the wobble along
-  const len = dist(a, b);
-  const nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
-
-  ctx.strokeStyle = COLORS.bone;
-  ctx.lineWidth = 3;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  const STEPS = 40;
-  for (let i = 0; i <= STEPS; i++) {
-    const u = i / STEPS;
-    // A bend shaped like a tent, peaking where it was plucked, zero at the ends
-    const w = string.wobbleU ? (u < string.wobbleU ? u / string.wobbleU : (1 - u) / (1 - string.wobbleU)) : 0;
-    const x = a.x + (b.x - a.x) * u + nx * amp * w;
-    const y = a.y + (b.y - a.y) * u + ny * amp * w;
-    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  }
-  ctx.stroke();
-
-  // The two pegs at the ends
-  ctx.fillStyle = COLORS.hands[0];
-  dot(a, 7);
-  dot(b, 7);
-}
-
-// ── 16. The mouse plays too ──────────────────────────────────
-// The mouse pointer is treated just like a fingertip, so the same pluck
-// code runs for both. Handy for testing without the camera.
-const mouse = { on: false, x: 0, y: 0 };
+// ── 17. The mouse plays too ──────────────────────────────────
+// Moving the mouse is an open fingertip: it plucks.
+// Pressing the button is a pinch: press on a peg to drag it, or press in
+// empty space and drag to stretch a new string.
+const mouse = { on: false, down: false, x: -99, y: -99 };
 
 $('mouse').addEventListener('click', () => {
   startAudio();
   mouse.on = true;
-  $('start').classList.add('hidden');
+  begin();
 });
-addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('pointerdown', e => {
+  if (!mouse.on) return;
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  mouse.down = true;
+  pinchStart('mouse', { x: mouse.x, y: mouse.y }, seconds());
+});
+addEventListener('pointerup', () => {
+  if (!mouse.down) return;
+  mouse.down = false;
+  pinchEnd('mouse', seconds());
+});
 
-// For automated testing only: lets a test feed in made-up hands and pointers.
-window.airStrings = { assignHands, slots, settings, checkPluck, string, mouse, sound: () => ({ audio, master }) };
+// For automated testing only: lets a test drive the app without a camera.
+window.airStrings = { Smoother, assignHands, updateGrabs, plucking, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master }), get preview() { return preview; } };
 
 loop();
 </script>
