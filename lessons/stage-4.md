@@ -113,3 +113,33 @@
 - Pluck the middle of a string, then near one end
 - In Stage 6 each spot along a string will play its own note
 - How would you split a string into notes, so that a longer string holds more of them?
+
+## Fix after testing: strings made by accident
+
+**What happened**
+- Strings sometimes appeared when you weren't trying to make one
+- Any moment both hands read as pinched, then let go, made a string
+  - A curled or relaxed hand can dip under the pinch line for a moment
+  - Your hands are usually far enough apart for a full-length string
+
+**What changed**
+- **Pull apart on purpose:** both pinches must pull at least 80 px further apart and keep stretching for a quarter of a second
+  - Until then the dashed line stays dim, and letting go makes nothing
+  - No message either, unless it looked like a real attempt
+  - The mouse is exempt, because a press-and-drag is always on purpose
+- **Settling time:** a hand that has just come into view can't pinch for 0.3 seconds
+  - The tracker's first readings of a new hand are the least reliable
+- **Firmer pinch:** the close point moved from 0.22 to 0.20
+- **3 frames, not 2:** a pinch must hold for about 1/20 of a second
+
+**Tested**
+- Made nothing in each accidental case:
+  - Both hands pinching at the same moment and letting go
+  - Drifting together while pinched
+  - Moving closer while pinched
+- A real pinch-and-pull still makes a string
+- A jerk or a half-hearted pull shows the "pull further apart" hint
+- A hand entering the frame already pinched waits to settle
+- A 2-frame glitch is ignored
+
+**New settings to tune:** `pullApart`, `stretchTime` and `settleTime` in section 3

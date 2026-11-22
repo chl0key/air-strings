@@ -178,9 +178,10 @@ const BONES = [
 // ── 3. Settings you can tune ─────────────────────────────────
 const settings = {
   // Pinch: a firm pinch reads about 0.10-0.17, a relaxed hand about 0.34
-  closeAt: 0.22,       // the pinch closes when the ratio drops below this
+  closeAt: 0.20,       // the pinch closes when the ratio drops below this
   openAt:  0.32,       // and opens again when it rises above this
-  holdFrames: 2,       // a change must last this many frames in a row
+  holdFrames: 3,       // a change must last this many frames in a row (about 1/20 s)
+  settleTime: 0.3,     // seconds: a hand that has just come into view can't pinch yet
 
   // Smoothing (section 8)
   steadyCutoff: 1.2,   // how much a still hand is smoothed: lower = steadier, but laggier
@@ -189,6 +190,8 @@ const settings = {
   // Strings
   grabRadius: 40,      // pixels: how close a pinch must be to a peg to grab it
   minLength: 110,      // pixels: shorter than this, a new string isn't made
+  pullApart: 80,       // pixels: the two pinches must pull at least this much further apart...
+  stretchTime: 0.25,   // seconds: ...and keep stretching at least this long, or nothing is made
   deleteBelow: 60,     // pixels: drag the pegs closer than this and the string is deleted
   maxStrings: 12,
   pluckPause: 0.25,    // seconds after letting go of a pinch before that hand can pluck
@@ -384,6 +387,7 @@ function updateHand(j, pts, now) {
   h.raw = pts;
   h.pts = pts.map((p, i) => ({ x: h.filters[i].x.filter(p.x, now), y: h.filters[i].y.filter(p.y, now) }));
   h.seen = now;
+  if (h.born === undefined) h.born = now;   // when this hand came into view
   updatePinch(j, h, now);
 }
 
@@ -396,6 +400,10 @@ function updatePinch(j, h, now) {
   const palmWidth = dist(p[INDEX_KNUCKLE], p[PINKY_KNUCKLE]) * PALM_WIDTH_SCALE;
   h.ratio = dist(p[THUMB_TIP], p[INDEX_TIP]) / Math.max(palmLength, palmWidth, 1);
   h.at = mid(p[THUMB_TIP], p[INDEX_TIP]);
+
+  // A hand that has only just come into view is often misread for a few
+  // frames, so it isn't allowed to start a pinch until it has settled.
+  if (!h.pinched && now - h.born < settings.settleTime) { h.streak = 0; return; }
 
   const wantsChange = h.pinched ? h.ratio > settings.openAt : h.ratio < settings.closeAt;
   h.streak = wantsChange ? h.streak + 1 : 0;
@@ -414,6 +422,11 @@ function updatePinch(j, h, now) {
 //   near a peg     → 'drag': the peg follows the pinch
 //   anywhere else  → 'free': on its own it does nothing yet. Two free
 //                    pinches at once become 'make': a new string between them.
+//
+// Making a string has to be on purpose. Two hands that happen to pinch at
+// the same moment and let go make nothing. The pinches have to pull apart
+// by at least pullApart pixels and keep stretching for stretchTime seconds.
+// Until then, the dashed line stays dim.
 //
 // Later stages add more targets: the middle of a string (menu), the
 // string itself (bend), and empty air with one hand (effects).
@@ -435,7 +448,7 @@ function pinchStart(who, p, now) {
 }
 
 // Runs every frame: move whatever each pinch is holding
-function updateGrabs() {
+function updateGrabs(now) {
   for (const who in grabs) {
     const g = grabs[who], p = pointOf(who);
     if (!p) continue;
@@ -446,14 +459,27 @@ function updateGrabs() {
   const g0 = grabs.hand0, g1 = grabs.hand1;
   if (g0 && g1 && (g0.job === 'free' || g0.job === 'make') && (g1.job === 'free' || g1.job === 'make')) {
     g0.job = g1.job = 'make';
-    preview = { a: pointOf('hand0'), b: pointOf('hand1') };
+    stretch(pointOf('hand0'), pointOf('hand1'), now, true);
   }
   // The mouse has only one "hand", so it stretches a string from where it pressed
   const gm = grabs.mouse;
   if (gm && (gm.job === 'free' || gm.job === 'make') && dist(gm.from, mouse) > 12) {
     gm.job = 'make';
-    preview = { a: gm.from, b: { x: mouse.x, y: mouse.y } };
+    stretch(gm.from, { x: mouse.x, y: mouse.y }, now, false);
   }
+}
+
+// Track a string being stretched, and decide whether it's ready to keep.
+// byHands: the pull-apart rules only apply to hands. A mouse press-and-drag
+// is always on purpose, so for the mouse, length is enough.
+function stretch(a, b, now, byHands) {
+  const d = dist(a, b);
+  if (!preview) preview = { startGap: d, startTime: now, pulled: 0 };   // first frame of this stretch
+  preview.a = a;
+  preview.b = b;
+  preview.pulled = Math.max(preview.pulled, d - preview.startGap);
+  preview.ready = d >= settings.minLength
+    && (!byHands || (preview.pulled >= settings.pullApart && now - preview.startTime >= settings.stretchTime));
 }
 
 // lost = the hand left the camera's view mid-pinch, so don't act on it
@@ -468,8 +494,10 @@ function pinchEnd(who, now, lost) {
     // The other hand was stretching the same string: it's done too
     for (const other in grabs) if (grabs[other].job === 'make') grabs[other].job = 'used';
     if (!pv || lost) return;
-    if (dist(pv.a, pv.b) >= settings.minLength) addString(pv.a, pv.b);
-    else toast('Pull further apart to make a string');
+    if (pv.ready) addString(pv.a, pv.b);
+    // Only explain if it looked like a real try. Hands that never pulled
+    // apart were probably an accident, so say nothing.
+    else if (pv.pulled >= settings.pullApart / 2) toast('Pull further apart to make a string');
   }
 
   if (g.job === 'drag' && strings.includes(g.s)) {
@@ -765,7 +793,7 @@ function loop() {
     frames++;
   }
 
-  updateGrabs();
+  updateGrabs(now);
   plucking(now);
   draw();
   updatePanel();
@@ -884,10 +912,10 @@ function drawPops() {
 }
 
 // The dashed line while a new string is being stretched.
-// Dim while it's too short to keep, bright once it's long enough.
+// Dim until it's ready to keep, bright once letting go will make the string.
 function drawPreview() {
   if (!preview) return;
-  const long = dist(preview.a, preview.b) >= settings.minLength;
+  const long = preview.ready;
   ctx.strokeStyle = long ? COLORS.bone : COLORS.dust;
   ctx.globalAlpha = long ? 1 : 0.6;
   ctx.lineWidth = 3;
