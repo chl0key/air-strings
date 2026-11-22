@@ -213,3 +213,21 @@
 - A panel or menu that closes under a resting fingertip doesn't reopen
   - Moving off and back opens it again
 - Every earlier test still passes
+
+## Fix after testing: buttons that stay put
+
+**What happened**
+- The top-right buttons jumped sideways when you changed key, scale or mode
+- Each button resized to fit its label
+  - "Key: C" is narrower than "Key: E♭", and "Blues" much narrower than "Major pentatonic"
+- The bar lines up from the right edge, so one button changing width shoved its neighbours along
+
+**What changed**
+- Each button gets one fixed width, wide enough for its longest possible label (`fixButtonWidths`, section 19)
+- The widths are measured in the real font, after it has loaded, so they fit exactly
+
+**Tested**
+- Clicked through 7 keys, 7 scales and both modes
+  - Before: 11 different button layouts across those 16 changes
+  - After: 1, so nothing moves
+- No label is cut off, including "Major pentatonic"

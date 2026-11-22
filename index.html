@@ -59,7 +59,7 @@
   /* Top bar: the one button we need so far */
   #bar { position: fixed; top: 16px; right: 16px; left: 16px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; pointer-events: none; }
   #bar button { pointer-events: auto; }
-  #bar button { font-size: 15px; padding: 9px 18px; background: color-mix(in srgb, var(--wall) 88%, transparent); color: var(--bone); }
+  #bar button { font-size: 15px; padding: 9px 18px; background: color-mix(in srgb, var(--wall) 88%, transparent); color: var(--bone); text-align: center; white-space: nowrap; }
 
   /* A short message that appears in the middle of the top edge, then fades */
   #toast {
@@ -252,6 +252,7 @@ function begin() {
   started = true;
   $('start').classList.add('hidden');
   $('bar').classList.remove('hidden');
+  fixButtonWidths();
   if (!strings.length) addString({ x: innerWidth * 0.3, y: innerHeight * 0.62 }, { x: innerWidth * 0.7, y: innerHeight * 0.45 });
 }
 
@@ -1289,6 +1290,29 @@ $('keyBtn').addEventListener('click', () => togglePanel('key', $('keyBtn')));
 $('scaleBtn').addEventListener('click', () => togglePanel('scale', $('scaleBtn')));
 $('modeBtn').addEventListener('click', () => setAll('mode', music.mode === 'notes' ? 'chords' : 'notes'));
 showMusic();
+
+// Each top-bar button keeps one width: wide enough for its longest label.
+// Without this, a button grows and shrinks as its label changes ("Key: C"
+// vs "Key: E♭"), and because the bar lines up from the right, every
+// change shoves the buttons beside it along.
+// Widths are measured in the real font, once it has loaded, so they fit exactly.
+const BUTTON_LABELS = {
+  keyBtn: () => NOTE_NAMES.map(n => 'Key: ' + n),
+  scaleBtn: () => SCALE_ORDER.map(id => SCALES[id].name),
+  modeBtn: () => ['Single notes', 'Chords'],
+};
+function fixButtonWidths() {
+  if ($('bar').classList.contains('hidden')) return;   // can't measure what isn't shown
+  for (const [id, labels] of Object.entries(BUTTON_LABELS)) {
+    const el = $(id);
+    el.style.width = '';
+    let widest = 0;
+    for (const text of labels()) { el.textContent = text; widest = Math.max(widest, el.getBoundingClientRect().width); }
+    el.style.width = Math.ceil(widest) + 'px';
+  }
+  showMusic();   // put the real labels back
+}
+document.fonts.ready.then(fixButtonWidths);
 
 // ── 20. The string menu ──────────────────────────────────────
 // Opens beside a string's middle dot. Every option is a box on the canvas.
