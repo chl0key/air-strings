@@ -103,7 +103,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 9: rest a fingertip on a string to hold the note: violins and voices sustain, drums and marimbas roll. Pinch a string and pull it sideways to bend the pitch, then let go to snap it.</p>
+  <p>Stage 10: pinch empty air with one hand and drag while you play. Down makes everything darker, up makes it thinner, sideways adds echo. Let go and it all comes back. With the mouse, hold Shift and drag.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -129,10 +129,14 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 9: hold, roll, bend and snap
+//  AIR STRINGS · Stage 10: the air pad
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • One hand pinches empty air and drags: down darker, up thinner, sideways echo (section 25)
+//    • With the mouse: hold Shift and drag
+//
+//  From Stage 9:
 //    • Rest a fingertip on a string: held instruments sustain, drums and mallets roll (section 23)
 //    • Pinch a string and pull sideways to bend the pitch; let go to snap it (section 24)
 //    • Every note is now a "voice" that can be held, bent and released (section 12c)
@@ -229,6 +233,10 @@ const settings = {
   bodyRadius: 18,      // pixels: how close a pinch must be to a string to grab it for a bend
   bendMax: 200,        // cents (100 = a semitone): the furthest a pull can bend the pitch
   bendPull: 140,       // pixels: pulling this far sideways gives the full bend
+
+  // The air pad (Stage 10)
+  padStart: 45,        // pixels: a one-hand pinch in free air that drags this far becomes the air pad
+  padReach: 220,       // pixels of drag for an effect's full amount
   pluckPause: 0.25,    // seconds after letting go of a pinch before that hand can pluck
 };
 
@@ -542,6 +550,8 @@ function pinchStart(who, p, now, aimed) {
     grabs[who] = { job: 'used' };
     return;
   }
+  // The mouse with Shift held: straight to the air pad
+  if (!tg && who === 'mouse' && mouse.shift) { grabs[who] = { job: 'fx', from: { ...p } }; return; }
   if (!tg) { grabs[who] = { job: 'free', from: { ...p } }; return; }
   if (tg.kind === 'button') grabs[who] = { job: 'press', el: tg.el, from: { ...p } };   // pressed when the pinch lets go
   if (tg.kind === 'peg')    grabs[who] = { job: 'drag', s: tg.s, end: tg.end };
@@ -556,11 +566,18 @@ function updateGrabs(now) {
     if (!p) continue;
     if (g.job === 'drag') g.s[g.end] = { ...p };
     if (g.job === 'bend') moveBend(g, p);
+    // One hand pinching free air and dragging, while the other hand isn't pinching: the air pad
+    if (g.job === 'free' && who !== 'mouse' && !grabs[who === 'hand0' ? 'hand1' : 'hand0']
+        && dist(p, g.from) > settings.padStart && !menu.open) g.job = 'fx';
+    if (g.job === 'fx') moveAirPad(g.from, p);
   }
 
   // Both hands pinching free air: they're stretching a new string
   const g0 = grabs.hand0, g1 = grabs.hand1;
-  if (g0 && g1 && (g0.job === 'free' || g0.job === 'make') && (g1.job === 'free' || g1.job === 'make')) {
+  // (A hand already working the air pad switches to stretching when the other hand pinches too.)
+  const canMake = g => g.job === 'free' || g.job === 'make' || g.job === 'fx';
+  if (g0 && g1 && canMake(g0) && canMake(g1)) {
+    if (g0.job === 'fx' || g1.job === 'fx') endAirPad();
     g0.job = g1.job = 'make';
     stretch(pointOf('hand0'), pointOf('hand1'), now, true);
   }
@@ -607,6 +624,7 @@ function pinchEnd(who, now, lost) {
     if (dist(g.s.a, g.s.b) < settings.deleteBelow) removeString(g.s);
   }
   if (g.job === 'bend') endBend(g);
+  if (g.job === 'fx') endAirPad();
 
   // A dot or a button only counts if the pinch stayed put: a quick, still
   // pinch-and-release, like a click
@@ -679,7 +697,7 @@ function startAudio() {
 
     master = audio.createGain();
     master.gain.value = 0.45;   // headroom: many notes ringing at once add up fast
-    master.connect(limiter);
+    buildAirPad(master, limiter);   // master → air pad effects → limiter (section 25)
 
     const reverb = audio.createConvolver();
     reverb.buffer = makeRoom(audio, ROOM_SECONDS);
@@ -1365,6 +1383,7 @@ function draw() {
 
   for (const s of strings) drawString(s);
   drawPreview();
+  drawAirPad();
   drawBursts();
   drawPops();
   drawMenu();
@@ -1651,6 +1670,7 @@ canvas.addEventListener('pointerdown', e => {
   if (!mouse.on) return;
   mouse.x = e.clientX; mouse.y = e.clientY;
   mouse.down = true;
+  mouse.shift = e.shiftKey;     // Shift-drag works the air pad
   pinchStart('mouse', { x: mouse.x, y: mouse.y }, seconds());
 });
 addEventListener('pointerup', () => {
@@ -2235,8 +2255,116 @@ function endBend(g) {
   if (pulled > 20) pluck(s, g.u, clamp(0.3 + 0.7 * pulled / settings.bendPull, 0.3, 1), side);
 }
 
+// ── 25. The air pad ──────────────────────────────────────────
+// Pinch empty air with one hand and drag. One drag, three effects, one per
+// direction away from where you pinched:
+//   down     darker: a lowpass filter closes, cutting the high sounds
+//   up       thinner: a highpass filter opens, cutting the low sounds
+//   sideways echo: more of the mix is fed into a repeating delay
+// The two directions of a drag are measured separately (how far down or
+// up, and how far sideways), so a diagonal drag mixes two effects at once.
+// Let go and everything glides back to normal.
+//
+// The effects sit on the whole mix, between the master volume and the limiter:
+//
+//   master ──► thin (highpass) ──► dark (lowpass) ──► limiter ──► speakers
+//      └──► echo send ──► delay ◄─► feedback (softened each repeat) ──┘ (into thin)
+let pad = null;          // the effect nodes
+let padState = null;     // { from, to, dark, thin, echo } while the pad is in use
+
+function buildAirPad(from, to) {
+  const thin = filterNode('highpass', 20, 0.7);
+  const dark = filterNode('lowpass', 20000, 0.7);
+  from.connect(thin);
+  thin.connect(dark);
+  dark.connect(to);
+
+  // The echo: a delay whose output feeds back into itself, a little softer
+  // and darker each time round, so each repeat fades like a real echo
+  const send = gainNode(0);
+  const delay = audio.createDelay(2);
+  delay.delayTime.value = 0.375;
+  const feedback = gainNode(0.4);
+  const soften = filterNode('lowpass', 3000, 0.5);
+  from.connect(send);
+  send.connect(delay);
+  delay.connect(soften);
+  soften.connect(feedback);
+  feedback.connect(delay);
+  soften.connect(thin);
+  pad = { thin, dark, send, feedback, delay };
+}
+
+function moveAirPad(from, to) {
+  const down = to.y - from.y, side = Math.abs(to.x - from.x), R = settings.padReach;
+  // A small dead zone around the start, so a tiny wobble changes nothing
+  const dark = clamp((down - 20) / R, 0, 1);
+  const thin = clamp((-down - 20) / R, 0, 1);
+  const echo = clamp((side - 30) / R, 0, 1);
+  padState = { from: { ...from }, to: { ...to }, dark, thin, echo };
+  setAirPad(dark, thin, echo, 0.04);
+}
+
+function endAirPad() {
+  if (!padState) return;
+  padState = null;
+  setAirPad(0, 0, 0, 0.12);     // glide back to normal
+}
+
+// Filters are set in a curve, not a straight line, because our ears hear
+// pitch that way: each halving of the cutoff sounds like the same-sized step.
+function setAirPad(dark, thin, echo, glide) {
+  if (!pad) return;
+  const t = audio.currentTime;
+  pad.dark.frequency.setTargetAtTime(20000 * Math.pow(0.018, dark), t, glide);   // 20 kHz down to 360 Hz
+  pad.thin.frequency.setTargetAtTime(20 * Math.pow(60, thin), t, glide);         // 20 Hz up to 1,200 Hz
+  pad.send.gain.setTargetAtTime(echo * 0.7, t, glide);
+  pad.feedback.gain.setTargetAtTime(0.35 + 0.25 * echo, t, glide);
+}
+
+// The pad on screen: a cross at the pinch, labelled, with a line to where you are now
+function drawAirPad() {
+  if (!padState) return;
+  const { from, to, dark, thin, echo } = padState, R = settings.padReach + 30;
+  ctx.strokeStyle = COLORS.dust;
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([4, 8]);
+  ctx.beginPath();
+  ctx.moveTo(from.x - R, from.y); ctx.lineTo(from.x + R, from.y);
+  ctx.moveTo(from.x, from.y - R); ctx.lineTo(from.x, from.y + R);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = 1;
+
+  // Direction names at the ends of the cross, lit when that effect is on
+  ctx.font = '600 14px "Bricolage Grotesque", sans-serif';
+  ctx.textAlign = 'center';
+  const label = (text, x, y, on) => { ctx.fillStyle = on ? COLORS.hands[0] : COLORS.dust; ctx.fillText(text, x, y); };
+  label('Thinner', from.x, from.y - R - 10, thin > 0);
+  label('Darker', from.x, from.y + R + 22, dark > 0);
+  label('Echo', from.x - R - 40, from.y + 5, echo > 0 && to.x < from.x);
+  label('Echo', from.x + R + 40, from.y + 5, echo > 0 && to.x >= from.x);
+
+  // The live amounts, beside the starting point: the one place your hand never covers
+  const amounts = [['Darker', dark], ['Thinner', thin], ['Echo', echo]].filter(([, k]) => k > 0);
+  ctx.textAlign = to.x >= from.x ? 'right' : 'left';
+  const tx = from.x + (to.x >= from.x ? -14 : 14);
+  ctx.fillStyle = COLORS.hands[0];
+  amounts.forEach(([name, k], i) => ctx.fillText(`${name} ${Math.round(k * 100)}%`, tx, from.y + (to.y >= from.y ? -14 - i * 18 : 26 + i * 18)));
+
+  ctx.strokeStyle = COLORS.hands[0];
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.fillStyle = COLORS.hands[0];
+  dot(from, 5);
+}
+
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { pad: () => ({ pad, padState }), updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>

@@ -16,8 +16,8 @@ His repo has no license, so this matches what it does, in my own code, name and 
 
 ## Next step
 
-Test Stage 9: rest a fingertip on a violin string and a drum string, then pinch a guitar string and pull.
-Then Stage 10: the air pad, one-hand pinch and drag for filter and echo.
+Test Stage 10: hold a note with one hand, pinch empty air with the other and drag down, up and sideways.
+Then Stage 11: beats, six patterns switched on one part at a time, on a steady clock.
 
 ## Stages
 
@@ -32,7 +32,7 @@ Then Stage 10: the air pad, one-hand pinch and drag for filter and echo.
 | 7 | The string menu: scale, key, notes or chords, octave, by pinching or hovering | [stage-7.md](lessons/stage-7.md) |
 | 8 | All 24 instruments, drums included, chosen from the string menu | [stage-8.md](lessons/stage-8.md) |
 | 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | [stage-9.md](lessons/stage-9.md) |
-| 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | - |
+| 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | [stage-10.md](lessons/stage-10.md) |
 | 11 | Beats: 6 patterns, one part at a time, on a steady clock | - |
 | 12 | Looper layers, snap to the grid, "follow chords" | - |
 | 13 | Recording: video or sound, MP4/WebM, MP3, WAV, stems | - |
