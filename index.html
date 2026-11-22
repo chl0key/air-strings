@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Air Strings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<style>
+  /* ── Colors ──────────────────────────────────────────────
+     Every color lives here, so the look can change in one place.
+     Theme: a practice room late at night, lit by one warm lamp. */
+  :root {
+    --room:   #1b1524;   /* background: deep plum */
+    --wall:   #2a2236;   /* panels */
+    --bone:   #ece4d6;   /* main text */
+    --dust:   #a89cb8;   /* quiet text, hand bones */
+    --lamp:   #f2a541;   /* hand 1: warm amber */
+    --ember:  #e4572e;   /* hand 2: coral red */
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--room);
+    color: var(--bone);
+    font-family: 'Bricolage Grotesque', sans-serif;
+    overflow: hidden;
+  }
+
+  /* The stage fills the window. The camera picture is drawn onto it. */
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+
+  /* The raw <video> is hidden. We only use it as a source of frames. */
+  video { display: none; }
+
+  /* Start screen */
+  #start {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 max(16px, 8vw);
+    gap: 20px;
+  }
+  #start h1 { margin: 0; font-size: clamp(48px, 9vw, 112px); font-weight: 800; line-height: 0.95; letter-spacing: -0.02em; }
+  #start p  { margin: 0; max-width: 34em; font-size: 18px; line-height: 1.5; color: var(--dust); }
+  #start button {
+    align-self: flex-start;
+    font: inherit; font-size: 18px; font-weight: 600;
+    color: var(--room); background: var(--lamp);
+    border: 0; border-radius: 999px; padding: 14px 28px; cursor: pointer;
+  }
+  #start button:disabled { opacity: 0.6; cursor: wait; }
+  #status { min-height: 1.5em; color: var(--lamp); font-size: 16px; }
+  .hidden { display: none !important; }
+
+  /* Small readout in the corner, so you can see what the tracker is doing */
+  #readout {
+    position: fixed; left: 16px; bottom: 16px;
+    font-size: 14px; color: var(--dust);
+    background: color-mix(in srgb, var(--room) 70%, transparent);
+    padding: 8px 12px; border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+
+<video id="cam" playsinline muted></video>
+<canvas id="stage"></canvas>
+
+<section id="start">
+  <h1>Air Strings</h1>
+  <p>Stage 1: turn on your camera and hold up your hands. You should see a dot on every fingertip.</p>
+  <button id="go">Turn on camera</button>
+  <div id="status"></div>
+</section>
+
+<div id="readout" class="hidden"></div>
+
+<script type="module">
+// ════════════════════════════════════════════════════════════
+//  AIR STRINGS · Stage 1: camera on, dots on your fingertips
+// ════════════════════════════════════════════════════════════
+//
+//  What happens, in order:
+//    1. You press the button. The browser asks for the camera.
+//    2. We load MediaPipe's hand tracker (a small AI model).
+//    3. About 60 times a second, we:
+//         a. show the tracker the newest camera picture
+//         b. get back 21 points for each hand it can see
+//         c. draw the picture and the points on the canvas
+//
+//  Nothing leaves your computer. The model runs inside the browser tab.
+
+// ── 1. Where the hand tracker comes from ─────────────────────
+// MediaPipe is Google's free library for tracking hands, faces and bodies.
+// We load a fixed version (0.10.14), so an update can't break the app.
+const MEDIAPIPE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const HAND_MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+
+// ── 2. The 21 points on a hand ───────────────────────────────
+// MediaPipe numbers the points the same way every time:
+//    0 = wrist
+//    1-4   = thumb    (4 is the thumb tip)
+//    5-8   = index    (8 is the index tip)
+//    9-12  = middle   (12 is the tip)
+//    13-16 = ring     (16 is the tip)
+//    17-20 = pinky    (20 is the tip)
+const FINGERTIPS = [4, 8, 12, 16, 20];
+
+// Which points to join with a line, so the dots look like a hand.
+const BONES = [
+  [0, 1], [1, 2], [2, 3], [3, 4],          // thumb
+  [0, 5], [5, 6], [6, 7], [7, 8],          // index
+  [5, 9], [9, 10], [10, 11], [11, 12],     // middle
+  [9, 13], [13, 14], [14, 15], [15, 16],   // ring
+  [13, 17], [17, 18], [18, 19], [19, 20],  // pinky
+  [0, 17],                                 // across the palm
+];
+
+// ── 3. Grab the page elements we need ────────────────────────
+const video   = document.getElementById('cam');
+const canvas  = document.getElementById('stage');
+const ctx     = canvas.getContext('2d');
+const startEl = document.getElementById('start');
+const goBtn   = document.getElementById('go');
+const statusEl  = document.getElementById('status');
+const readoutEl = document.getElementById('readout');
+
+// Read the colors from the CSS above, so they're defined in one place.
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const COLORS = { room: css('--room'), dust: css('--dust'), hands: [css('--lamp'), css('--ember')] };
+
+let tracker = null;      // the hand tracker, once it has loaded
+let hands = [];          // the hands found in the latest frame
+let lastVideoTime = -1;  // so we never send the same camera frame twice
+
+// ── 4. Keep the canvas the same size as the window ───────────
+// "dpr" is the screen's pixel density. Retina Macs have 2 pixels per point,
+// so we draw at double size to keep lines sharp.
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = innerWidth * dpr;
+  canvas.height = innerHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // from now on, draw in normal points
+}
+addEventListener('resize', resize);
+resize();
+
+// ── 5. Start: camera first, then the tracker ─────────────────
+goBtn.addEventListener('click', async () => {
+  goBtn.disabled = true;
+  try {
+    statusEl.textContent = 'Waiting for camera permission…';
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    statusEl.textContent = 'Loading the hand tracker…';
+    tracker = await loadTracker();
+
+    startEl.classList.add('hidden');
+    readoutEl.classList.remove('hidden');
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = err.name === 'NotAllowedError'
+      ? 'The camera was blocked. Allow it in the address bar, then try again.'
+      : 'Something went wrong: ' + err.message;
+    goBtn.disabled = false;
+  }
+});
+
+async function loadTracker() {
+  // "import()" downloads the MediaPipe code only when we need it.
+  const vision = await import(MEDIAPIPE + '/vision_bundle.mjs');
+  const files = await vision.FilesetResolver.forVisionTasks(MEDIAPIPE + '/wasm');
+  const options = delegate => ({
+    baseOptions: { modelAssetPath: HAND_MODEL, delegate },
+    runningMode: 'VIDEO',   // we'll feed it a stream of frames, not single photos
+    numHands: 2,
+  });
+  // The graphics card (GPU) is fastest. If the browser won't allow it, use the CPU.
+  try {
+    return await vision.HandLandmarker.createFromOptions(files, options('GPU'));
+  } catch (e) {
+    console.warn('GPU not available, using CPU', e);
+    return await vision.HandLandmarker.createFromOptions(files, options('CPU'));
+  }
+}
+
+// ── 6. Fit the camera picture to the window ──────────────────
+// Like a photo set to "fill": scale it until it covers the whole window,
+// then centre it. Some of the edges get cropped.
+function videoFit() {
+  const vw = video.videoWidth, vh = video.videoHeight;
+  const scale = Math.max(innerWidth / vw, innerHeight / vh);
+  return { vw, vh, scale, ox: (innerWidth - vw * scale) / 2, oy: (innerHeight - vh * scale) / 2 };
+}
+
+// MediaPipe gives each point as a fraction of the camera picture:
+// x = 0 is the left edge, x = 1 is the right edge. We turn that into a
+// position on the screen. We also flip x, so the screen acts like a mirror:
+// move your right hand right, and it moves right on screen.
+function toScreen(p, fit) {
+  return {
+    x: innerWidth - (p.x * fit.vw * fit.scale + fit.ox),
+    y: p.y * fit.vh * fit.scale + fit.oy,
+  };
+}
+
+// ── 7. The loop: runs once per screen refresh ────────────────
+let fps = 0, frames = 0, fpsClock = performance.now();
+
+function loop() {
+  requestAnimationFrame(loop);   // ask to run again before the next refresh
+
+  // a. Track: only when there is a new camera frame
+  if (tracker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const result = tracker.detectForVideo(video, performance.now());
+    const fit = videoFit();
+    hands = result.landmarks.map(points => points.map(p => toScreen(p, fit)));
+    frames++;
+  }
+
+  // b. Draw
+  draw();
+
+  // c. Count frames per second, once a second
+  const now = performance.now();
+  if (now - fpsClock > 1000) {
+    fps = Math.round(frames * 1000 / (now - fpsClock));
+    frames = 0; fpsClock = now;
+    readoutEl.textContent = `Hands: ${hands.length} · Tracking ${fps} times a second`;
+  }
+}
+
+function draw() {
+  ctx.fillStyle = COLORS.room;
+  ctx.fillRect(0, 0, innerWidth, innerHeight);
+  if (!video.videoWidth) return;
+
+  // The camera picture, mirrored and dimmed so the hands stand out.
+  const fit = videoFit();
+  ctx.save();
+  ctx.globalAlpha = 0.35;
+  ctx.translate(innerWidth, 0);
+  ctx.scale(-1, 1);              // flip left-right
+  ctx.drawImage(video, fit.ox, fit.oy, fit.vw * fit.scale, fit.vh * fit.scale);
+  ctx.restore();
+
+  hands.forEach((pts, i) => {
+    const color = COLORS.hands[i % 2];
+
+    // Bones: thin lines between the joints
+    ctx.strokeStyle = COLORS.dust;
+    ctx.globalAlpha = 0.6;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const [a, b] of BONES) {
+      ctx.moveTo(pts[a].x, pts[a].y);
+      ctx.lineTo(pts[b].x, pts[b].y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Joints: small dots
+    ctx.fillStyle = COLORS.dust;
+    for (const p of pts) dot(p, 3);
+
+    // Fingertips: big dots in the hand's own color
+    ctx.fillStyle = color;
+    for (const k of FINGERTIPS) dot(pts[k], 9);
+  });
+}
+
+function dot(p, r) {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+loop();
+</script>
+</body>
+</html>
