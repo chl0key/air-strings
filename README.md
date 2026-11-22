@@ -16,8 +16,8 @@ His repo has no license, so this matches what it does, in my own code, name and 
 
 ## Next step
 
-Test Stage 11: press Beat, switch on the parts one at a time, try each pattern, play along on a string.
-Then Stage 12: the looper, follow chords, snap to the grid.
+Test Stage 12: record a 2-bar guitar layer over a beat, add a violin layer, try Follow chords.
+Then Stage 13: recording video and sound, and saving stems.
 
 ## Stages
 
@@ -34,7 +34,7 @@ Then Stage 12: the looper, follow chords, snap to the grid.
 | 9 | Hold to sustain or roll, pinch-and-pull to bend the pitch | [stage-9.md](lessons/stage-9.md) |
 | 10 | Air pad: one-hand pinch and drag sweeps the filter and echo | [stage-10.md](lessons/stage-10.md) |
 | 11 | Beats: 6 patterns, one part at a time, on a steady clock | [stage-11.md](lessons/stage-11.md) |
-| 12 | Looper layers, snap to the grid, "follow chords" | - |
+| 12 | Looper layers, snap to the grid, "follow chords" | [stage-12.md](lessons/stage-12.md) |
 | 13 | Recording: video or sound, MP4/WebM, MP3, WAV, stems | - |
 | 14 | Saved setups and ready-made layouts | - |
 | 15+ | My additions | - |

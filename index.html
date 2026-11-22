@@ -116,7 +116,7 @@
 
 <section id="start">
   <h1>Air Strings</h1>
-  <p>Stage 11: press Beat at the top right, pick a pattern, and switch on its parts one at a time: kick, snare, hats, bass, chords. Then play along on your strings.</p>
+  <p>Stage 12: press Loop at the top right and record a layer: it waits for the next bar, records what you play, then loops it. Stack up to six. Switch on Follow chords and every string fits the beat.</p>
   <div class="buttons">
     <button id="go">Turn on camera</button>
     <button id="mouse" class="quiet">Use the mouse instead</button>
@@ -129,6 +129,7 @@
   <button id="scaleBtn" title="Choose the scale for every string"></button>
   <button id="modeBtn" title="Single notes or chords"></button>
   <button id="beatBtn" title="Backing beat: pattern, parts, tempo, play and stop"></button>
+  <button id="loopBtn" title="Looper: record layers, snap to the beat, follow chords"></button>
   <button id="clear">Clear strings</button>
 </div>
 <div id="toast"></div>
@@ -143,10 +144,15 @@
 
 <script type="module">
 // ════════════════════════════════════════════════════════════
-//  AIR STRINGS · Stage 11: beats
+//  AIR STRINGS · Stage 12: the looper
 // ════════════════════════════════════════════════════════════
 //
 //  New in this stage:
+//    • Record what you play over the beat, in layers that loop (section 27)
+//    • Snap recorded sounds to the beat, or keep your exact timing
+//    • Follow chords: every string retunes to the beat's chord each bar (section 27a)
+//
+//  From Stage 11:
 //    • Six beat patterns, five parts switched on one at a time (section 26)
 //    • A look-ahead scheduler on the audio clock, so the beat never wobbles
 //    • Bass and chords follow the top bar's key and scale
@@ -1230,6 +1236,11 @@ function makeVoice(gate, sources) {
       gate.gain.setTargetAtTime(0, t, fade / 3);
       for (const src of sources) { try { src.stop(t + fade + 0.1); } catch (e) { /* already stopped */ } }
     },
+    // The same, booked for a time in the future (used when a loop replays a held note)
+    releaseAt(t, fade = 0.2) {
+      gate.gain.setTargetAtTime(0, t, fade / 3);
+      for (const src of sources) { try { src.stop(t + fade + 0.1); } catch (e) { /* already stopped */ } }
+    },
   };
 }
 
@@ -1351,6 +1362,8 @@ function pluck(s, u, loudness, fromSide = 1) {
     const order = fromSide > 0 ? notes : [...notes].reverse();
     order.forEach((m, i) => playNote(s.inst, m, loudness * (notes.length > 1 ? 0.6 : 1), t + i * STRUM_GAP));
   }
+  // The looper records it (unless this is the menu's quiet preview)
+  if (!menu.open) captureEvent(drum ? { inst: s.inst, drum, vel: loudness } : { inst: s.inst, notes: fromSide > 0 ? notes : [...notes].reverse(), vel: loudness });
 
   s.wobble = 6 + 18 * loudness;
   s.wobbleAt = performance.now();
@@ -1428,6 +1441,7 @@ function draw() {
   drawPreview();
   drawAirPad();
   drawBeatLights();
+  drawLoopStatus();
   drawBursts();
   drawPops();
   drawMenu();
@@ -1751,7 +1765,7 @@ const SCALES = {
 };
 const SCALE_ORDER = Object.keys(SCALES);
 
-const music = { key: 0, scale: 'major', mode: 'notes' };
+const music = { key: 0, scale: 'major', mode: 'notes', follow: false };
 
 // The backing beat's state (Stage 11, section 26). It lives up here because
 // the top bar shows whether the beat is playing from the moment the page loads.
@@ -1760,7 +1774,11 @@ const beat = {
   parts: { kick: false, snare: false, hats: false, bass: false, chords: false },
   step: 0, nextTime: 0, timer: null, dirty: false,
   booked: [],                      // recently booked steps and their times, for the lights
-};   // key 0 = C, 1 = C♯ ... 11 = B
+};
+
+// The looper's state (Stage 12, section 27), up here for the same reason
+const rec = { armed: false, on: false, len: 32, snap: true, start: 0, startTime: 0, events: [] };
+const layers = [];   // key 0 = C, 1 = C♯ ... 11 = B
 
 const midiToPitch = m => 440 * Math.pow(2, (m - 69) / 12);
 const noteName = m => NOTE_NAMES[((m % 12) + 12) % 12];
@@ -1804,6 +1822,7 @@ function zoneNotes(s, z) {
   // Drum strings: each zone is a drum, not a note
   const kit = DRUM_KITS[s.inst];
   if (kit) return { drum: kit[z], label: kit[z] };
+  if (music.follow && beat.playing) return followNotes(s, z);     // Stage 12: follow the beat's chords
   if (s.mode === 'chords') {
     const sc = SCALES[s.scale].parent || s.scale;
     const notes = [0, 2, 4].map(k => degree(s, sc, z + k));
@@ -1832,6 +1851,7 @@ function showMusic() {
   $('scaleBtn').textContent = SCALES[music.scale].name;
   $('modeBtn').textContent = music.mode === 'notes' ? 'Single notes' : 'Chords';
   $('beatBtn').textContent = beat.playing ? 'Beat ●' : 'Beat';
+  $('loopBtn').textContent = rec.armed || rec.on ? 'Loop ●' : 'Loop';
 }
 // Key and Scale have many choices, so they open a panel. Notes/Chords has
 // two, so it just switches. Pressing a button again closes its panel.
@@ -1854,6 +1874,7 @@ const BUTTON_LABELS = {
   scaleBtn: () => SCALE_ORDER.map(id => SCALES[id].name),
   modeBtn: () => ['Single notes', 'Chords'],
   beatBtn: () => ['Beat', 'Beat ●'],
+  loopBtn: () => ['Loop', 'Loop ●'],
 };
 function fixButtonWidths() {
   if ($('bar').classList.contains('hidden')) return;   // can't measure what isn't shown
@@ -1919,6 +1940,7 @@ function layoutMenu() {
     rows.push({ title: 'Scale for every string', items: SCALE_ORDER.map(id => ({ label: SCALE_SHORT[id], w: 84, on: () => music.scale === id, act: () => setAll('scale', id) })) });
     rows.push({ title: '', items: [{ label: 'Done', w: 100, quiet: true, act: () => {} }] });
   } else if (menu.kind === 'beat') buildBeatRows(rows);
+  else if (menu.kind === 'loop') buildLoopRows(rows);
   else buildStringRows(s, rows);
   placeMenu(rows);
 }
@@ -2008,7 +2030,7 @@ function chooseItem(it) {
       layoutMenu();     // the rows can change: drums hide the note settings
       pluck(s, 0.5, 0.35, 1);
     }
-  } else if (kind === 'beat') {
+  } else if (kind === 'beat' || kind === 'loop') {
     // The beat panel stays open: you switch parts on one at a time
     if (menu.open) layoutMenu();
   } else {
@@ -2083,7 +2105,8 @@ function drawMenu() {
       ctx.stroke();
     }
     ctx.fillStyle = on ? COLORS.room : it.danger ? COLORS.hands[1] : COLORS.bone;
-    ctx.fillText(it.label, it.x + it.w / 2, it.y + it.h / 2 + 6);
+    if (it.left) { ctx.textAlign = 'left'; ctx.fillText(it.label, it.x + 2, it.y + it.h / 2 + 6); ctx.textAlign = 'center'; }
+    else ctx.fillText(it.label, it.x + it.w / 2, it.y + it.h / 2 + 6);
 
     // The dwell ring: fills up while a hand holds still over an option
     if (hv && !hv.done) {
@@ -2192,7 +2215,13 @@ function checkHold(s, id, p, d, mem, now) {
   const u = alongOf(s, p);
   const H = s.holds[id];
   if (H) {
-    if (Math.abs(d) > settings.holdLeave || u < 0.02 || u > 0.98) { endHold(s, id); return false; }
+    if (Math.abs(d) > settings.holdLeave || u < 0.02 || u > 0.98) {
+      endHold(s, id);
+      // Lifting off isn't a pluck: count the side the finger left by as where it came from
+      mem.side = Math.sign(d) || mem.side;
+      mem.last = now;
+      return false;
+    }
     H.seen = now;
     H.u = clamp(u, 0, 0.999);
     const z = zoneAt(s, H.u);
@@ -2230,6 +2259,8 @@ function moveHold(s, H, z, first) {
   if (style === 'sustain') {
     for (const v of H.voices) v && v.release(0.12);
     H.voices = info.notes.map(m => playNote(s.inst, m, 0.6, 0, true));
+    endSustain(H.rec);                                   // the looper: close the last held note...
+    H.rec = captureEvent({ inst: s.inst, notes: info.notes, vel: 0.6, held: true });   // ...and open this one
   } else if (first) H.nextRoll = 0;     // a roll's first hit lands straight away
   s.flashZone = z;
   s.wobbleAt = performance.now();
@@ -2242,6 +2273,7 @@ function endHold(s, id) {
   const H = s.holds[id];
   if (!H) return;
   for (const v of H.voices) v && v.release(INSTRUMENTS[s.inst].sound === 'ensemble' ? 0.5 : 0.25);
+  endSustain(H.rec);
   delete s.holds[id];
 }
 
@@ -2256,6 +2288,7 @@ function updateHolds(now) {
       const info = zoneNotes(s, H.z), vel = 0.35 + 0.25 * Math.random();
       if (info.drum) playDrum(s.inst, info.drum, vel, 0);
       else info.notes.forEach(m => playNote(s.inst, m, vel * (info.notes.length > 1 ? 0.6 : 1), 0));
+      captureEvent(info.drum ? { inst: s.inst, drum: info.drum, vel } : { inst: s.inst, notes: info.notes, vel });
       s.wobble = 3 + 4 * vel;
       s.wobbleAt = performance.now();
       s.wobbleU = clamp(H.u, 0.1, 0.9);
@@ -2492,11 +2525,13 @@ function startBeat() {
   beat.step = 0;
   beat.nextTime = audio.currentTime + 0.06;
   beat.booked = [];
+  for (const L of layers) { L.offset = 0; L.ready = true; }   // recorded loops restart from their beginning
   beat.timer = setInterval(planAhead, TICK);
   planAhead();
   beat.dirty = true;
 }
 function stopBeat() {
+  if (rec.armed || rec.on) cancelRecording();
   beat.playing = false;
   clearInterval(beat.timer);
   beat.dirty = true;
@@ -2505,8 +2540,10 @@ function stopBeat() {
 function planAhead() {
   if (!beat.playing) return;
   while (beat.nextTime < audio.currentTime + LOOKAHEAD) {
+    loopBoundary(beat.step, beat.nextTime);       // the looper starts and stops recording on bar lines
     playStep(beat.step, beat.nextTime);
-    beat.booked.push({ i: beat.step % 16, t: beat.nextTime });
+    playLayers(beat.step, beat.nextTime);
+    beat.booked.push({ i: beat.step % 16, s: beat.step, t: beat.nextTime });
     if (beat.booked.length > 32) beat.booked.shift();
     beat.step++;
     beat.nextTime += stepLength();
@@ -2614,8 +2651,173 @@ addEventListener('keydown', e => {
   beat.playing ? stopBeat() : startBeat();
 });
 
+// ── 27. The looper ───────────────────────────────────────────
+// Records what you play over the beat, then plays it back on every loop, so
+// you can stack layers.
+//
+// What a loop needs to remember about each sound ("event"):
+//   inst    which instrument
+//   notes   which notes (or drum: which drum)
+//   vel     how loud
+//   pos     where in the loop, counted in beat steps (sixteenths), not
+//           seconds. That way a layer stays in time if you change tempo.
+//   dur     for a held note: how many steps it lasted
+//
+// Recording always starts and stops exactly on a bar line, so layers line
+// up with the beat and with each other. Arm it, and it waits for the next bar.
+//
+// Snap: each sound's position is rounded to the nearest step, which tidies
+// up timing. Off, it keeps your exact timing, swing and all.
+const MAX_LAYERS = 6;
+const loopStats = { replayed: 0 };   // for testing: how many sounds the layers have replayed
+
+function armRecording() {
+  if (layers.length >= MAX_LAYERS) { toast(`${MAX_LAYERS} layers is the limit. Delete one first.`); return; }
+  if (!beat.playing) startBeat();           // a loop needs a steady clock
+  Object.assign(rec, { armed: true, on: false, events: [] });
+  beat.dirty = true;
+}
+function cancelRecording() {
+  Object.assign(rec, { armed: false, on: false, events: [] });
+  beat.dirty = true;
+}
+
+// Called by the scheduler for every step it books, before it plays the step
+function loopBoundary(step, t) {
+  if (rec.armed && step % 16 === 0) {
+    Object.assign(rec, { armed: false, on: true, start: step, startTime: t, events: [] });
+    beat.dirty = true;
+  } else if (rec.on && step === rec.start + rec.len) finishRecording(t);
+}
+
+// Note down one sound. Returns the event, so a held note can be given its length later.
+function captureEvent(ev) {
+  if (!rec.on || !audio) return null;
+  const t = audio.currentTime;
+  let pos = (t - rec.startTime) / stepLength();
+  if (pos < -0.5 || pos >= rec.len) return null;          // before the bar line, or after the end
+  if (rec.snap) pos = Math.round(pos) % rec.len;
+  ev.pos = Math.max(0, pos);
+  if (ev.held) ev.t0 = t;
+  rec.events.push(ev);
+  return ev;
+}
+// A held note has ended: record how long it lasted, in steps
+function endSustain(ev) {
+  if (!ev || ev.dur !== undefined || !audio) return;
+  let dur = (audio.currentTime - ev.t0) / stepLength();
+  if (rec.snap) dur = Math.max(1, Math.round(dur));
+  ev.dur = Math.min(dur, rec.len - ev.pos);
+}
+
+function finishRecording(t) {
+  for (const ev of rec.events) if (ev.held && ev.dur === undefined) ev.dur = Math.max(1, rec.len - ev.pos);   // still held at the end
+  if (rec.events.length) {
+    // File each event under its step, so playback only looks at one step's sounds at a time
+    const buckets = Array.from({ length: rec.len }, () => []);
+    for (const ev of rec.events) buckets[Math.floor(ev.pos)].push(ev);
+    const names = [...new Set(rec.events.map(e => INSTRUMENTS[e.inst].name))];
+    layers.push({ id: Date.now(), len: rec.len, offset: rec.start, buckets, ready: false, muted: false,
+                  name: names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : ''), count: rec.events.length });
+    toast(`Layer ${layers.length} recorded`);
+  } else toast('Nothing was played, so no layer was made');
+  Object.assign(rec, { armed: false, on: false, events: [] });
+  beat.dirty = true;
+  if (menu.open && menu.kind === 'loop') layoutMenu();
+}
+
+// Called by the scheduler for every step: play each layer's sounds for this step.
+// A brand-new layer skips its first time round, because you just played it live.
+function playLayers(step, t) {
+  for (const L of layers) {
+    if (!L.ready) { if (step >= L.offset + L.len) L.ready = true; else continue; }
+    if (L.muted) continue;
+    const p = (((step - L.offset) % L.len) + L.len) % L.len;
+    for (const ev of L.buckets[p]) {
+      loopStats.replayed++;
+      const at = swungTime(p % 16, t) + (ev.pos - p) * stepLength();
+      if (ev.drum) playDrum(ev.inst, ev.drum, ev.vel, at);
+      else if (ev.held) {
+        const end = at + ev.dur * stepLength();
+        for (const m of ev.notes) { const v = playNote(ev.inst, m, ev.vel, at, true); v && v.releaseAt(end, 0.2); }
+      } else ev.notes.forEach((m, i) => playNote(ev.inst, m, ev.vel * (ev.notes.length > 1 ? 0.6 : 1), at + i * STRUM_GAP));
+    }
+  }
+}
+
+// ── 27a. Follow chords ──
+// The beat changes chord every bar. With "follow chords" on, every string
+// is retuned to the chord of the moment: each zone plays one of that
+// chord's notes (root, third, fifth, then up an octave and round again).
+// In chords mode, each zone plays the whole chord, a little higher each zone.
+// So anywhere you sweep fits what the beat is doing.
+function currentBar() {
+  let bar = 0;
+  for (const b of beat.booked) if (audio && b.t <= audio.currentTime) bar = Math.floor(b.s / 16);
+  return bar;
+}
+function followNotes(s, z) {
+  const parent = SCALES[music.scale].parent || music.scale;
+  const root = chordForBar(currentBar());
+  const tone = k => degree({ key: music.key, oct: s.oct }, parent, root + [0, 2, 4][k % 3] + 7 * Math.floor(k / 3));
+  if (s.mode === 'chords') {
+    const notes = [z, z + 1, z + 2].map(tone);
+    return { notes, label: chordName([tone(0), tone(1), tone(2)]) };
+  }
+  const m = tone(z);
+  return { notes: [m], label: noteName(m) };
+}
+
+// ── 27b. The loop panel and status ──
+function buildLoopRows(rows) {
+  const LEN = [[16, '1 bar'], [32, '2 bars'], [64, '4 bars']];
+  rows.push({ title: 'Loop length', items: [
+    ...LEN.map(([n, label]) => ({ label, w: 84, on: () => rec.len === n, act: () => { if (!rec.on) rec.len = n; } })),
+    { gap: 16 },
+    { label: rec.snap ? 'Snap: on' : 'Snap: off', w: 104, on: () => rec.snap, act: () => { rec.snap = !rec.snap; } },
+    { label: music.follow ? 'Follow chords: on' : 'Follow chords: off', w: 170, on: () => music.follow, act: () => { music.follow = !music.follow; } },
+  ] });
+  rows.push({ title: '', items: [
+    { label: rec.on ? 'Recording…' : rec.armed ? 'Get ready…' : 'Record layer', w: 150, danger: !rec.on && !rec.armed, on: () => rec.on || rec.armed,
+      // Arming closes the panel: strings don't play while a menu is open, and your hands are needed
+      act: () => { if (rec.on || rec.armed) cancelRecording(); else { armRecording(); closeMenu(); } } },
+    { label: 'Undo last', w: 110, act: () => { layers.pop(); } },
+    { gap: 16 },
+    { label: 'Done', w: 100, act: () => { closeMenu(); } },
+  ] });
+  layers.forEach((L, i) => rows.push({ title: i === 0 ? 'Layers' : '', tight: true, items: [
+    { label: `${i + 1}. ${L.name}`, w: 260, display: true, left: true, act: () => {} },
+    { label: L.muted ? 'Unmute' : 'Mute', w: 90, on: () => L.muted, act: () => { L.muted = !L.muted; } },
+    { label: 'Delete', w: 90, danger: true, act: () => { layers.splice(layers.indexOf(L), 1); } },
+  ] }));
+}
+
+// Under the beat lights: what the looper is doing
+function drawLoopStatus() {
+  const lines = [];
+  if (rec.armed) lines.push(['Get ready: recording starts at the next bar', COLORS.hands[0]]);
+  if (rec.on && audio) {
+    const done = clamp(Math.floor((audio.currentTime - rec.startTime) / stepLength()), 0, rec.len);
+    lines.push([`Recording: ${Math.ceil((rec.len - done) / 4)} beats left`, COLORS.hands[1]]);
+  }
+  if (layers.length) lines.push([`${layers.length} layer${layers.length > 1 ? 's' : ''} looping`, COLORS.dust]);
+  if (music.follow && beat.playing) {
+    const parent = SCALES[music.scale].parent || music.scale, root = chordForBar(currentBar());
+    lines.push([`Following ${chordName([0, 2, 4].map(k => degree({ key: music.key, oct: 0 }, parent, root + k)))}`, COLORS.dust]);
+  }
+  ctx.font = '600 13px "Bricolage Grotesque", "Air Accidentals", sans-serif';
+  ctx.textAlign = 'left';
+  lines.forEach(([text, color], i) => {
+    ctx.fillStyle = color;
+    if (color === COLORS.hands[1]) dot({ x: 29, y: 80 + i * 18 }, 5);    // a red recording light
+    ctx.fillText(text, color === COLORS.hands[1] ? 40 : 24, 84 + i * 18);
+  });
+}
+
+$('loopBtn').addEventListener('click', () => togglePanel('loop', $('loopBtn')));
+
 // For automated testing only: lets a test drive the app without a camera.
-window.airStrings = { beat, BEATS, startBeat, stopBeat, currentStep, pad: () => ({ pad, padState }), updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
+window.airStrings = { loopStats, rec, layers, armRecording, cancelRecording, followNotes, currentBar, beat, BEATS, startBeat, stopBeat, currentStep, pad: () => ({ pad, padState }), updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
 
 loop();
 </script>
