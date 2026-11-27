@@ -96,3 +96,25 @@
 - You've made a loop, and when the page closes, it's gone
 - The browser can record its own sound and picture
 - What would it need to capture to save a video of you playing, with sound?
+
+## Fix after testing: a Rec button
+
+**What happened**
+- **Record layer** was tucked inside the Loop panel, and you couldn't find it
+
+**What changed**
+- A **● Rec** button now sits on the top bar, between **Beat** and **Loop**
+  - One press arms a recording, and it starts on the next bar line
+  - The button turns red and reads "● Get ready", then "● Recording"
+  - Press it again while it's red to cancel
+- Your hands can press it like any other top-bar button: hold a fingertip on it, or pinch
+- The **Loop** button's dot now means "you have layers"
+- On narrow windows the top bar reaches the beat lights, so the lights and status move down below the bar
+
+**Tested**
+- At 1280 px and 1024 px wide:
+  - Rec armed the recording and started the beat
+  - The label went "● Get ready", then "● Recording", then back to "● Rec" when the layer was done
+  - A second press cancelled
+- The buttons never moved, whatever the label said
+- At 1024 px the beat lights moved below the bar instead of under it

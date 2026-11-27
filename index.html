@@ -72,6 +72,9 @@
   /* Top bar: the one button we need so far */
   #bar { position: fixed; top: 16px; right: 16px; left: 16px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; pointer-events: none; }
   #bar button { pointer-events: auto; }
+  /* The Rec button: a red dot, and all red while waiting or recording */
+  #recBtn { color: var(--ember); }
+  #recBtn.live { background: var(--ember); color: var(--room); }
   #bar button { font-size: 15px; padding: 9px 18px; background: color-mix(in srgb, var(--wall) 88%, transparent); color: var(--bone); text-align: center; white-space: nowrap; }
 
   /* A short message that appears in the middle of the top edge, then fades */
@@ -129,7 +132,8 @@
   <button id="scaleBtn" title="Choose the scale for every string"></button>
   <button id="modeBtn" title="Single notes or chords"></button>
   <button id="beatBtn" title="Backing beat: pattern, parts, tempo, play and stop"></button>
-  <button id="loopBtn" title="Looper: record layers, snap to the beat, follow chords"></button>
+  <button id="recBtn" title="Record a loop layer: starts on the next bar"></button>
+  <button id="loopBtn" title="Looper: loop length, snap, follow chords, and your layers"></button>
   <button id="clear">Clear strings</button>
 </div>
 <div id="toast"></div>
@@ -1851,7 +1855,9 @@ function showMusic() {
   $('scaleBtn').textContent = SCALES[music.scale].name;
   $('modeBtn').textContent = music.mode === 'notes' ? 'Single notes' : 'Chords';
   $('beatBtn').textContent = beat.playing ? 'Beat ●' : 'Beat';
-  $('loopBtn').textContent = rec.armed || rec.on ? 'Loop ●' : 'Loop';
+  $('loopBtn').textContent = layers.length ? 'Loop ●' : 'Loop';
+  $('recBtn').textContent = rec.on ? '● Recording' : rec.armed ? '● Get ready' : '● Rec';
+  $('recBtn').classList.toggle('live', rec.on || rec.armed);
 }
 // Key and Scale have many choices, so they open a panel. Notes/Chords has
 // two, so it just switches. Pressing a button again closes its panel.
@@ -1874,6 +1880,7 @@ const BUTTON_LABELS = {
   scaleBtn: () => SCALE_ORDER.map(id => SCALES[id].name),
   modeBtn: () => ['Single notes', 'Chords'],
   beatBtn: () => ['Beat', 'Beat ●'],
+  recBtn: () => ['● Rec', '● Get ready', '● Recording'],
   loopBtn: () => ['Loop', 'Loop ●'],
 };
 function fixButtonWidths() {
@@ -2603,6 +2610,15 @@ function currentStep() {
   return cur;
 }
 
+// The beat lights and the looper status sit in the top left. On a narrow
+// window the top bar reaches that far, so they move down below it.
+function statusDrop() {
+  const first = document.querySelector('#bar button');
+  if (!first) return 0;
+  const r = first.getBoundingClientRect();
+  return r.left < 330 ? r.bottom + 4 : 0;     // 330 px: the width of the lights and their caption
+}
+
 // 16 lights in the top left: the current step glows, and every fourth light is bigger (the beats)
 function drawBeatLights() {
   if (!beat.playing) return;
@@ -2610,13 +2626,13 @@ function drawBeatLights() {
   for (let i = 0; i < 16; i++) {
     ctx.fillStyle = i === cur ? COLORS.hands[0] : COLORS.dust;
     ctx.globalAlpha = i === cur ? 1 : 0.35;
-    dot({ x: 24 + i * 16 + Math.floor(i / 4) * 6, y: 34 }, i % 4 === 0 ? 5 : 3.5);
+    dot({ x: 24 + i * 16 + Math.floor(i / 4) * 6, y: 34 + statusDrop() }, i % 4 === 0 ? 5 : 3.5);
   }
   ctx.globalAlpha = 1;
   ctx.font = '600 13px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'left';
   ctx.fillStyle = COLORS.dust;
-  ctx.fillText(`${BEATS[beat.pattern].name} at ${beat.bpm} BPM`, 24, 60);
+  ctx.fillText(`${BEATS[beat.pattern].name} at ${beat.bpm} BPM`, 24, 60 + statusDrop());
 }
 
 // The beat panel: pattern, parts, tempo, play/stop
@@ -2720,6 +2736,7 @@ function finishRecording(t) {
     layers.push({ id: Date.now(), len: rec.len, offset: rec.start, buckets, ready: false, muted: false,
                   name: names.slice(0, 3).join(', ') + (names.length > 3 ? '…' : ''), count: rec.events.length });
     toast(`Layer ${layers.length} recorded`);
+    beat.dirty = true;
   } else toast('Nothing was played, so no layer was made');
   Object.assign(rec, { armed: false, on: false, events: [] });
   beat.dirty = true;
@@ -2781,14 +2798,14 @@ function buildLoopRows(rows) {
     { label: rec.on ? 'Recording…' : rec.armed ? 'Get ready…' : 'Record layer', w: 150, danger: !rec.on && !rec.armed, on: () => rec.on || rec.armed,
       // Arming closes the panel: strings don't play while a menu is open, and your hands are needed
       act: () => { if (rec.on || rec.armed) cancelRecording(); else { armRecording(); closeMenu(); } } },
-    { label: 'Undo last', w: 110, act: () => { layers.pop(); } },
+    { label: 'Undo last', w: 110, act: () => { layers.pop(); beat.dirty = true; } },
     { gap: 16 },
     { label: 'Done', w: 100, act: () => { closeMenu(); } },
   ] });
   layers.forEach((L, i) => rows.push({ title: i === 0 ? 'Layers' : '', tight: true, items: [
     { label: `${i + 1}. ${L.name}`, w: 260, display: true, left: true, act: () => {} },
     { label: L.muted ? 'Unmute' : 'Mute', w: 90, on: () => L.muted, act: () => { L.muted = !L.muted; } },
-    { label: 'Delete', w: 90, danger: true, act: () => { layers.splice(layers.indexOf(L), 1); } },
+    { label: 'Delete', w: 90, danger: true, act: () => { layers.splice(layers.indexOf(L), 1); beat.dirty = true; } },
   ] }));
 }
 
@@ -2807,14 +2824,21 @@ function drawLoopStatus() {
   }
   ctx.font = '600 13px "Bricolage Grotesque", "Air Accidentals", sans-serif';
   ctx.textAlign = 'left';
+  const drop = statusDrop();
   lines.forEach(([text, color], i) => {
     ctx.fillStyle = color;
-    if (color === COLORS.hands[1]) dot({ x: 29, y: 80 + i * 18 }, 5);    // a red recording light
-    ctx.fillText(text, color === COLORS.hands[1] ? 40 : 24, 84 + i * 18);
+    if (color === COLORS.hands[1]) dot({ x: 29, y: 80 + drop + i * 18 }, 5);    // a red recording light
+    ctx.fillText(text, color === COLORS.hands[1] ? 40 : 24, 84 + drop + i * 18);
   });
 }
 
 $('loopBtn').addEventListener('click', () => togglePanel('loop', $('loopBtn')));
+// The Rec button: one press arms a recording (it starts on the next bar),
+// another press while waiting or recording cancels it
+$('recBtn').addEventListener('click', () => {
+  if (rec.on || rec.armed) cancelRecording(); else armRecording();
+  if (menu.open && menu.kind === 'loop') layoutMenu();
+});
 
 // For automated testing only: lets a test drive the app without a camera.
 window.airStrings = { loopStats, rec, layers, armRecording, cancelRecording, followNotes, currentBar, beat, BEATS, startBeat, stopBeat, currentStep, pad: () => ({ pad, padState }), updateHolds, nearestBody, INSTRUMENTS, DRUM_KITS, playNote, playDrum, updateDotHold, openPanel, targetAt, updateMenu, updateButtonHover, menu, openMenu, closeMenu, menuItemAt, pinchStart, pinchEnd, stringNote, STRING_SOUND, Smoother, assignHands, updateGrabs, plucking, music, zoneCount, zoneAt, zoneNotes, lowEnd, pluck, slots, settings, strings, grabs, mouse, checkPluck, addString, sound: () => ({ audio, master, limiter }), get preview() { return preview; } };
